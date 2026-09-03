@@ -62,6 +62,10 @@ static uint8_t file_04[] = {
 	0x00, 0x01, 0x02
 };
 
+static uint8_t file_05[] = {
+	0x05, 0x15, 0x05
+};
+
 static uint8_t data_00[] = {
 	0x00, 0x6E, 0x04, 0x57, 0x08, 0xFB, 0x71, 0x96,
 	0x00, 0x2E, 0x55, 0x3D, 0x02, 0xC3, 0xA6, 0x92,
@@ -186,6 +190,25 @@ static TEEC_Result fs_read(TEEC_Session *sess, uint32_t obj, void *data,
 		*count = op.params[1].value.b;
 
 	return res;
+}
+
+static TEEC_Result fs_read_to_shm(TEEC_Session *sess, uint32_t obj,
+				   void *data, uint32_t data_size)
+{
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	uint32_t org = 0;
+
+	op.params[0].tmpref.buffer = data;
+	op.params[0].tmpref.size = data_size;
+	op.params[1].value.a = obj;
+	op.params[1].value.b = 0;
+
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_OUTPUT,
+					 TEEC_VALUE_INOUT,
+					 TEEC_NONE, TEEC_NONE);
+
+	return TEEC_InvokeCommand(sess, TA_STORAGE_CMD_READ_TO_SHM,
+				  &op, &org);
 }
 
 static TEEC_Result fs_write(TEEC_Session *sess, uint32_t obj, void *data,
@@ -2318,3 +2341,46 @@ exit:
 DEFINE_TEST_MULTIPLE_STORAGE_IDS(xtest_tee_test_6021)
 ADBG_CASE_DEFINE(regression, 6021, xtest_tee_test_6021,
 		 "Modify and check persistent object usage");
+
+static void xtest_tee_test_6022_single(ADBG_Case_t *c,
+				       uint32_t storage_id)
+{
+	const uint32_t flags = TEE_DATA_FLAG_ACCESS_READ |
+			       TEE_DATA_FLAG_ACCESS_WRITE_META |
+			       TEE_DATA_FLAG_OVERWRITE;
+	TEEC_Result res = TEEC_ERROR_GENERIC;
+	TEEC_Session sess = { };
+	uint32_t orig = 0;
+	uint32_t obj = 0;
+	uint8_t out = 0xa5;
+
+	res = xtest_teec_open_session(&sess, &storage_ta_uuid, NULL, &orig);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		return;
+
+	res = fs_create(&sess, file_05, sizeof(file_05), flags, 0,
+			data_01, sizeof(data_01), &obj, storage_id);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		goto close_session;
+
+	res = fs_read_to_shm(&sess, obj, &out, sizeof(out));
+	ADBG_EXPECT_TEEC_RESULT(c, TEE_ERROR_TARGET_DEAD, res);
+
+close_session:
+	TEEC_CloseSession(&sess);
+
+	res = xtest_teec_open_session(&sess, &storage_ta_uuid, NULL, &orig);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		return;
+
+	res = fs_open(&sess, file_05, sizeof(file_05),
+		      TEE_DATA_FLAG_ACCESS_WRITE_META, &obj, storage_id);
+	if (ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		ADBG_EXPECT_TEEC_SUCCESS(c, fs_unlink(&sess, obj));
+
+	TEEC_CloseSession(&sess);
+}
+
+DEFINE_TEST_MULTIPLE_STORAGE_IDS(xtest_tee_test_6022)
+ADBG_CASE_DEFINE(regression, 6022, xtest_tee_test_6022,
+		 "TEE_ReadObjectData output in SHM");
