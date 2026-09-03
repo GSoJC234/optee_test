@@ -18,6 +18,8 @@ TEE_Result ta_storage_cmd_create_overwrite(uint32_t command,
 					   TEE_Param params[4]);
 TEE_Result ta_storage_cmd_close(uint32_t param_types, TEE_Param params[4]);
 TEE_Result ta_storage_cmd_read(uint32_t param_types, TEE_Param params[4]);
+TEE_Result ta_storage_cmd_read_to_shm(uint32_t param_types, 
+				       TEE_Param params[4]);
 TEE_Result ta_storage_cmd_write(uint32_t param_types, TEE_Param params[4]);
 TEE_Result ta_storage_cmd_seek(uint32_t param_types, TEE_Param params[4]);
 TEE_Result ta_storage_cmd_unlink(uint32_t param_types, TEE_Param params[4]);

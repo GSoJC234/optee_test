@@ -59,6 +59,9 @@ TEE_Result TA_InvokeCommandEntryPoint(void *pSessionContext,
 	case TA_STORAGE_CMD_READ:
 		return ta_storage_cmd_read(nParamTypes, pParams);
 
+	case TA_STORAGE_CMD_READ_TO_SHM:
+		return ta_storage_cmd_read_to_shm(nParamTypes, pParams);
+
 	case TA_STORAGE_CMD_WRITE:
 		return ta_storage_cmd_write(nParamTypes, pParams);
 
