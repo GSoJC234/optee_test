@@ -651,4 +651,11 @@
  */
 #define TA_CRYPT_CMD_ARITH_EXPMOD		84
 
+/*
+ * TEE_Result TEE_CopyObjectAttributes1(TEE_ObjectHandle destObject,
+ *                                      TEE_ObjectHandle srcObject);
+ * out	params[0].value.a: destination usage after copy
+ */
+#define TA_CRYPT_CMD_COPY_OBJECT_ATTRIBUTES_USAGE	85
+
 #endif /*TA_CRYPT_H */

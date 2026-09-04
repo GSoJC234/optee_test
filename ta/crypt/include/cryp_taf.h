@@ -63,6 +63,9 @@ TEE_Result ta_entry_populate_transient_object(uint32_t param_type,
 TEE_Result ta_entry_copy_object_attributes(uint32_t param_type,
 					   TEE_Param params[4]);
 
+TEE_Result ta_entry_copy_object_attributes_usage(uint32_t param_type,
+					         TEE_Param params[4]);
+
 TEE_Result ta_entry_generate_key(uint32_t param_type, TEE_Param params[4]);
 
 TEE_Result ta_entry_asymmetric_encrypt(uint32_t param_type,

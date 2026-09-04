@@ -511,6 +511,65 @@ TEE_Result ta_entry_copy_object_attributes(uint32_t param_type,
 	return TEE_CopyObjectAttributes1(dst, src);
 }
 
+TEE_Result ta_entry_copy_object_attributes_usage(uint32_t param_type,
+						 TEE_Param params[4])
+{
+	const uint32_t src_usage =
+		TEE_USAGE_ENCRYPT | TEE_USAGE_DECRYPT;
+	const uint32_t dst_usage = TEE_USAGE_ENCRYPT;
+	static const uint8_t key[16];
+	TEE_ObjectHandle src = TEE_HANDLE_NULL;
+	TEE_ObjectHandle dst = TEE_HANDLE_NULL;
+	TEE_ObjectInfo info = { };
+	TEE_Attribute attr = { };
+	TEE_Result res = TEE_SUCCESS;
+
+	ASSERT_PARAM_TYPE(TEE_PARAM_TYPES(
+				  TEE_PARAM_TYPE_VALUE_OUTPUT,
+				  TEE_PARAM_TYPE_NONE,
+				  TEE_PARAM_TYPE_NONE,
+				  TEE_PARAM_TYPE_NONE));
+
+	res = TEE_AllocateTransientObject(TEE_TYPE_AES, 128, &src);
+	if (res)
+		goto out;
+
+	res = TEE_AllocateTransientObject(TEE_TYPE_AES, 128, &dst);
+	if (res)
+		goto out;
+
+	TEE_InitRefAttribute(&attr, TEE_ATTR_SECRET_VALUE,
+			     key, sizeof(key));
+
+	res = TEE_PopulateTransientObject(src, &attr, 1);
+	if (res)
+		goto out;
+
+	res = TEE_RestrictObjectUsage1(src, src_usage);
+	if (res)
+		goto out;
+
+	res = TEE_RestrictObjectUsage1(dst, dst_usage);
+	if (res)
+		goto out;
+
+	res = TEE_CopyObjectAttributes1(dst, src);
+	if (res)
+		goto out;
+
+	res = TEE_GetObjectInfo1(dst, &info);
+	if (!res)
+		params[0].value.a = info.objectUsage;
+
+out:
+	if (dst != TEE_HANDLE_NULL)
+		TEE_FreeTransientObject(dst);
+	if (src != TEE_HANDLE_NULL)
+		TEE_FreeTransientObject(src);
+
+	return res;
+}
+
 TEE_Result ta_entry_generate_key(uint32_t param_type, TEE_Param params[4])
 {
 	TEE_ObjectHandle o = obj_handle_lookup(params[0].value.a);

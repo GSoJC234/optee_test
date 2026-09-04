@@ -7232,3 +7232,34 @@ static void xtest_tee_test_4019(ADBG_Case_t *c)
 
 ADBG_CASE_DEFINE(regression, 4019, xtest_tee_test_4019,
 		 "Test ECDH invalid curve attack rejection")
+
+static void xtest_tee_test_4020(ADBG_Case_t *c)
+{
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	TEEC_Result res = TEEC_ERROR_GENERIC;
+	TEEC_Session session = { };
+	uint32_t ret_orig = 0;
+
+	res = xtest_teec_open_session(&session, &crypt_user_ta_uuid,
+				      NULL, &ret_orig);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		return;
+
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_OUTPUT,
+					 TEEC_NONE,
+					 TEEC_NONE,
+					 TEEC_NONE);
+
+	res = TEEC_InvokeCommand(&session,
+				 TA_CRYPT_CMD_COPY_OBJECT_ATTRIBUTES_USAGE,
+				 &op, &ret_orig);
+
+	if (ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		ADBG_EXPECT_COMPARE_UNSIGNED(c, op.params[0].value.a, ==,
+					     TEE_USAGE_ENCRYPT);
+
+	TEEC_CloseSession(&session);
+}
+
+ADBG_CASE_DEFINE(regression, 4020, xtest_tee_test_4020,
+		 "TEE_CopyObjectAttributes1() intersects object usage");
