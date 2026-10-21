@@ -36,6 +36,7 @@ TA_DIRS := create_fail_test \
 	   subkey2 \
 	   nil_uuid
 
+TA_DIRS += core_fuzz_ta
 ifeq ($(CFG_SECURE_DATA_PATH),y)
 TA_DIRS += sdp_basic
 endif

@@ -1,0 +1,176 @@
+#!/usr/bin/expect -f
+# SPDX-License-Identifier: BSD-2-Clause
+set timeout 240
+log_user 0
+
+if {$argc != 1} {
+    puts stderr "usage: $argv0 fuzz|replay"
+    exit 2
+}
+set mode [lindex $argv 0]
+switch -- $mode {
+    fuzz {
+        set normal_log $::env(FUZZ_NORMAL_LOG)
+        set phase_file $::env(FUZZ_PHASE_FILE)
+        set payload_phase fuzz
+        set payload_timeout $::env(FUZZ_TIMEOUT)
+        set payload_label fuzz-finish
+        set payload_name "fuzz run"
+    }
+    replay {
+        set normal_log $::env(FUZZ_REPLAY_NORMAL_LOG)
+        set phase_file $::env(FUZZ_REPLAY_PHASE_FILE)
+        set payload_phase input
+        set payload_timeout $::env(FUZZ_REPLAY_TIMEOUT)
+        set payload_label replay-finish
+        set payload_name "single-input replay"
+    }
+    default {
+        puts stderr "usage: $argv0 fuzz|replay"
+        exit 2
+    }
+}
+log_file -a -noappend $normal_log
+
+# OP-TEE uses QEMU's second serial port, separate from the Linux console.
+# Start with an empty log so an older VM's report cannot be attributed here.
+set secure_file [open serial1.log w]
+close $secure_file
+spawn -open [open "|tail -n +1 -f serial1.log"]
+set secure_spawn $spawn_id
+set qemu_spawn ""
+set phase boot
+
+proc set_phase {value} {
+    set ::phase $value
+    set file [open $::phase_file w]
+    puts $file $value
+    close $file
+}
+proc terminate_spawn {id} {
+    if {$id eq ""} {
+        return
+    }
+    if {[catch {exp_pid -i $id} pid]} {
+        return
+    }
+    if {$pid > 0} {
+        catch {exec kill -TERM -- $pid}
+        after 250
+        if {![catch {exec kill -0 -- $pid}]} {
+            catch {exec kill -KILL -- $pid}
+        }
+    }
+    catch {close -i $id}
+    catch {wait -i $id}
+}
+proc stop_children {} {
+    terminate_spawn $::qemu_spawn
+    terminate_spawn $::secure_spawn
+}
+proc fail {message code} {
+    puts stderr "FAIL: $message (phase=$::phase)"
+    stop_children
+    exit $code
+}
+proc asan_report {} {
+    puts stderr "ASAN: secure-world access violation (phase=$::phase)"
+    fail "OP-TEE ASan report" 127
+}
+proc run_command {command label} {
+    set timeout 120
+    send -i $::qemu_spawn -- "$command; echo ${label}:\$?\r"
+    expect {
+        -i $::secure_spawn -re {\[ASAN\]: access violation} { asan_report }
+        -i $::qemu_spawn -re [format {%s:([0-9]+)} $label] {
+            if {$expect_out(1,string) ne "0"} {
+                fail "$label exited with $expect_out(1,string)" 2
+            }
+        }
+        -i $::qemu_spawn "Kernel panic" { fail "kernel panic during $label" 125 }
+        timeout { fail "timeout during $label" 124 }
+        -i $::qemu_spawn eof { fail "QEMU exited during $label" 126 }
+    }
+    expect {
+        -i $::secure_spawn -re {\[ASAN\]: access violation} { asan_report }
+        -i $::qemu_spawn -re {# $} {}
+        timeout { fail "prompt missing after $label" 124 }
+        -i $::qemu_spawn eof { fail "QEMU exited after $label" 126 }
+    }
+}
+
+try {
+set_phase boot
+puts "Starting OP-TEE QEMU $payload_name"
+spawn sh -c "exec $::env(QEMU) $::env(QEMU_CHECK_ARGS)"
+set qemu_spawn $spawn_id
+expect {
+    -i $secure_spawn -re {\[ASAN\]: access violation} { asan_report }
+    -i $qemu_spawn -re {login:} {}
+    -i $qemu_spawn "Kernel panic" { fail "kernel panic during boot" 125 }
+    timeout { fail "boot timeout" 124 }
+    -i $qemu_spawn eof { fail "QEMU exited during boot" 126 }
+}
+send -i $qemu_spawn -- "root\r\r"
+expect {
+    -i $secure_spawn -re {\[ASAN\]: access violation} { asan_report }
+    -i $qemu_spawn -re {# $} {}
+    timeout { fail "root prompt missing" 124 }
+    -i $qemu_spawn eof { fail "QEMU exited before root prompt" 126 }
+}
+puts "PASS: normal-world boot"
+set_phase setup
+run_command "mkdir -p /mnt/host" "mkdir"
+run_command "mount -t 9p -o trans=virtio,version=9p2000.L host /mnt/host" "virtfs"
+run_command "cp /mnt/host/out-br/target/lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-refresh"
+run_command "test -f /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-installed"
+set base "/mnt/host/optee_test/ta/core_fuzz_ta"
+if {$mode eq "fuzz"} {
+    run_command "cmp /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta /mnt/host/out-br/target/lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-current"
+    set command "$base/host/core_fuzz_ta_fuzzer $base/seeds /mnt/host/out/fuzz $::env(FUZZ_ITERATIONS) $::env(FUZZ_RNG_SEED) --hopper=$::env(FUZZ_HOPPER_MODE)"
+    if {[info exists ::env(FUZZ_DURATION_SECONDS)] &&
+        $::env(FUZZ_DURATION_SECONDS) ne "0"} {
+        append command " --duration-seconds=$::env(FUZZ_DURATION_SECONDS)"
+    }
+} else {
+    set command "$base/host/core_fuzz_ta_ca --reproduce $::env(FUZZ_REPLAY_GUEST_INPUT)"
+    if {$::env(FUZZ_REPLAY_TARGET_INDEX) ne "-1"} {
+        append command " $::env(FUZZ_REPLAY_TARGET_INDEX)"
+    }
+}
+set_phase $payload_phase
+send -i $qemu_spawn -- "$command; echo ${payload_label}:\$?\r"
+set timeout $payload_timeout
+expect {
+    -i $secure_spawn -re {\[ASAN\]: access violation} { asan_report }
+    -i $qemu_spawn -re [format {%s:([0-9]+)} $payload_label] {
+        set status $expect_out(1,string)
+    }
+    -i $qemu_spawn "Kernel panic" { fail "kernel panic during $payload_name" 125 }
+    timeout { fail "$payload_name timed out" 124 }
+    -i $qemu_spawn eof { fail "QEMU exited during $payload_name" 126 }
+}
+expect {
+    -i $secure_spawn -re {\[ASAN\]: access violation} { asan_report }
+    -i $qemu_spawn -re {# $} {}
+    timeout { fail "prompt missing after $payload_name" 124 }
+    -i $qemu_spawn eof { fail "QEMU exited after $payload_name" 126 }
+}
+set_phase exit
+send -i $qemu_spawn -- "\001x"
+expect {
+    -i $secure_spawn -re {\[ASAN\]: access violation} { asan_report }
+    -i $qemu_spawn eof {}
+    timeout { fail "QEMU did not exit" 126 }
+}
+stop_children
+if {$status ne "0"} {
+    puts stderr "FAIL: $payload_name exited with $status"
+    exit $status
+}
+puts "PASS: $payload_name"
+} on error {message options} {
+    puts stderr "FAIL: unexpected Expect error: $message (phase=$::phase)"
+    stop_children
+    exit 2
+}

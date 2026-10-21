@@ -1,0 +1,73 @@
+#!/usr/bin/expect -f
+# SPDX-License-Identifier: BSD-2-Clause
+
+set timeout 240
+log_user 0
+log_file -noappend fuzz-stage1-normal.log
+
+proc fail {message} {
+	puts stderr "FAIL: $message"
+	exit 1
+}
+
+proc run_command {command label {expected_status 0} {required {}}} {
+	global timeout
+	set timeout 120
+	send -- "$command; echo ${label}:\$?\r"
+	expect {
+		-re [format {%s:([0-9]+)} $label] {
+			set status $expect_out(1,string)
+			set output $expect_out(buffer)
+		}
+		"Kernel panic" { fail "kernel panic during $label" }
+		timeout { fail "timeout during $label" }
+		eof { fail "QEMU exited during $label" }
+	}
+	if {$status ne $expected_status} {
+		fail "$label exited with $status; expected $expected_status"
+	}
+	foreach needle $required {
+		if {[string first $needle $output] < 0} {
+			fail "$label output did not contain: $needle"
+		}
+	}
+	expect {
+		-re {# $} {}
+		timeout { fail "prompt missing after $label" }
+	}
+	puts "PASS: $label"
+}
+
+puts "Starting nested OP-TEE QEMU"
+spawn sh -c "$::env(QEMU) $::env(QEMU_CHECK_ARGS)"
+expect {
+	-re {login:} {}
+	"Kernel panic" { fail "kernel panic during boot" }
+	timeout { fail "boot timeout" }
+	eof { fail "QEMU exited during boot" }
+}
+send -- "root\r\r"
+expect {
+	-re {# $} {}
+	timeout { fail "root prompt missing" }
+}
+puts "PASS: normal-world boot"
+log_user 1
+
+run_command "mkdir -p /mnt/host" "mkdir"
+run_command "mount -t 9p -o trans=virtio,version=9p2000.L host /mnt/host" "virtfs"
+run_command "cp /mnt/host/out-br/target/lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-refresh"
+run_command "test -f /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-installed"
+set base "/mnt/host/optee_test/ta/core_fuzz_ta"
+run_command "$base/host/core_fuzz_ta_ca $base/seeds/sha256_abc.bin 2" "sha256-abc" 0 [list "run=2 invoke=0x00000000" "digest=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
+run_command "$base/host/core_fuzz_ta_ca $base/seeds/invalid_handle.bin" "invalid-handle" 0 [list "step=0 opcode=2 slot=7 status=0xffff0006" "step=2 opcode=4 slot=7 status=0xffff0006"]
+run_command "$base/host/core_fuzz_ta_ca $base/seeds/interleaved_slot.bin" "interleaved-slot" 0 [list "step=2 opcode=1 slot=1 status=0x00000000" "step=4 opcode=4 slot=0 status=0x00000000" "digest=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
+run_command "$base/host/core_fuzz_ta_ca $base/seeds/short_digest_buffer.bin" "short-buffer" 0 [list "step=3 opcode=4 slot=0 status=0xffff0010 digest_len=32"]
+run_command "$base/host/core_fuzz_ta_ca $base/seeds/truncated_record.bin" "truncated-record" 2 [list "invoke=0xffff0006"]
+
+send -- "\001x"
+expect {
+	eof {}
+	timeout { fail "QEMU did not exit" }
+}
+puts "PASS: QEMU exit"
