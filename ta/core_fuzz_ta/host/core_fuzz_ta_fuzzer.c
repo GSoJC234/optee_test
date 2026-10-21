@@ -232,7 +232,7 @@ static void initialize_op_fields(uint8_t header[CORE_FUZZ_TA_OP_HEADER_SIZE],
 	write_u16(header + 5, 0);
 	switch (header[0]) {
 	case CORE_FUZZ_TA_ALLOC:
-		header[2] = random_below(rng, 12);
+		header[2] = random_below(rng, 18);
 		if (header[2] >= 2)
 			write_u16(header + 5,
 				  random_below(rng, CORE_FUZZ_TA_SLOTS));
@@ -486,7 +486,7 @@ static bool mutate_structured(const uint8_t *input, size_t input_size,
 							sizeof(usage_boundaries) /
 							sizeof(usage_boundaries[0]))]);
 				else if (header[0] == CORE_FUZZ_TA_ALLOC) {
-					header[2] = random_below(rng, 12);
+					header[2] = random_below(rng, 18);
 					if (header[2] >= 2)
 						write_u16(header + 5,
 						  random_below(rng,

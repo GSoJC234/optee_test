@@ -27,6 +27,37 @@ def stream(*records: bytes) -> bytes:
 def main() -> None:
     SEEDS.mkdir(exist_ok=True)
     hmac_key = b"K" * 32
+    zero_aes_key = bytes(16)
+    zero_nonce = bytes(12)
+    ccm_ciphertext_and_tag = bytes.fromhex(
+        "06a233de8dfc1f1de0a7e39461a5ed5d50f9ea90a1"
+    )
+    ccm_tag_then_ciphertext = ccm_ciphertext_and_tag[-16:] + \
+        ccm_ciphertext_and_tag[:-16]
+    rsa_digest = sha256(b"abc").digest()
+    rsa_records = [
+        op(6, slot=0, selector=4, aux=1024),
+        op(14, slot=0, aux=1024),
+    ]
+    for slot in range(1, 6):
+        rsa_records.extend((
+            op(6, slot=slot, selector=4, aux=1024),
+            op(13, slot=slot, selector=0),
+        ))
+    rsa_records.extend((
+        op(1, slot=0, selector=14, aux=1),
+        op(26, slot=0, data=rsa_digest, aux=256),
+        op(1, slot=1, selector=15, aux=2),
+        op(27, slot=1, selector=1, data=rsa_digest),
+        op(1, slot=2, selector=10, aux=3),
+        op(26, slot=2, data=b"v1.5", aux=256),
+        op(1, slot=3, selector=11, aux=4),
+        op(26, slot=3, selector=1, aux=256),
+        op(1, slot=4, selector=16, aux=5),
+        op(26, slot=4, data=b"oaep", aux=256),
+        op(1, slot=5, selector=17, aux=0),
+        op(26, slot=5, selector=1, aux=256),
+    ))
     cases = {
         "sha256_abc.bin": stream(
             op(1), op(2), op(3, data=b"abc"), op(4, aux=32), op(5)
@@ -108,6 +139,34 @@ def main() -> None:
             op(18, data=b"def", aux=3),
             op(5),
         ),
+        "aes_ctr_decrypt.bin": stream(
+            op(6, slot=4, selector=2, aux=128),
+            op(7, slot=4, data=zero_aes_key),
+            op(1, selector=4, aux=4),
+            op(16, data=bytes(16)),
+            op(17, data=bytes.fromhex("07"), aux=1),
+            op(18, data=bytes.fromhex("8b28"), aux=2),
+            op(5),
+        ),
+        "ccm_encrypt.bin": stream(
+            op(6, slot=4, selector=2, aux=128),
+            op(7, slot=4, data=zero_aes_key),
+            op(1, selector=12, aux=4),
+            op(21, data=zero_nonce, selector=16, aux=(3 << 8) | 5),
+            op(22, data=b"aad"),
+            op(23, data=b"hello", aux=5),
+            op(24, selector=16),
+            op(5),
+        ),
+        "ccm_decrypt.bin": stream(
+            op(6, slot=4, selector=2, aux=128),
+            op(7, slot=4, data=zero_aes_key),
+            op(1, selector=13, aux=4),
+            op(21, data=zero_nonce, selector=16, aux=(3 << 8) | 5),
+            op(22, data=b"aad"),
+            op(25, data=ccm_tag_then_ciphertext, selector=16, aux=5),
+            op(5),
+        ),
         "hkdf_sha256.bin": stream(
             op(6, slot=0, selector=3, aux=256),
             op(7, slot=0, selector=1, data=b"I" * 32),
@@ -144,12 +203,13 @@ def main() -> None:
             op(6, slot=1, selector=4, aux=2048),
             op(13, slot=1, selector=0),
             op(1, slot=0, selector=8, aux=0),
-            op(26, slot=0, data=sha256(b"abc").digest(), aux=256),
+            op(26, slot=0, data=rsa_digest, aux=256),
             op(5, slot=0),
             op(1, slot=1, selector=9, aux=1),
-            op(27, slot=1, selector=1, data=sha256(b"abc").digest()),
+            op(27, slot=1, selector=1, data=rsa_digest),
             op(5, slot=1),
         ),
+        "rsa_modes.bin": stream(*rsa_records),
     }
     for name, data in cases.items():
         (SEEDS / name).write_bytes(data)

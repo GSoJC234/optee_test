@@ -3,8 +3,8 @@
 This TA executes bounded digest, HMAC, transient-object, cipher,
 authenticated-encryption, key-derivation, RNG and asymmetric crypto syscall
 sequences from S-EL0. Its algorithm selectors include SHA-256, SHA-512,
-HMAC-SHA256, AES-CTR, AES-GCM, HKDF-SHA256, RSA signatures and RSA
-encryption/decryption.
+HMAC-SHA256, AES-CTR, AES-GCM, AES-CCM, HKDF-SHA256, RSA PKCS#1 v1.5
+signatures/encryption, RSA-PSS and RSA-OAEP with SHA-256.
 The single-input Linux client remains available for smoke tests. A separate
 coverage-guided client mutates the same input format, collects OP-TEE core
 feedback and retains useful inputs.
@@ -36,7 +36,7 @@ Each invocation begins with both arrays empty. The opcodes are:
 
 | Opcode | Name | Action and relevant fields |
 | ---: | --- | --- |
-| 1 | ALLOC | Allocate state in `slot`. `selector` 0: SHA-256 digest; 1: SHA-512 digest; 2: HMAC-SHA256; 3/4: AES-CTR encrypt/decrypt; 5/6: AES-GCM encrypt/decrypt; 7: HKDF-SHA256 derive; 8/9: RSA-SHA256 sign/verify; 10/11: RSAES-PKCS1-v1_5 encrypt/decrypt. For selectors 2..11, `aux` is the key object slot (0..7). |
+| 1 | ALLOC | Allocate state in slot. selector 0: SHA-256 digest; 1: SHA-512 digest; 2: HMAC-SHA256; 3/4: AES-CTR encrypt/decrypt; 5/6: AES-GCM encrypt/decrypt; 7: HKDF-SHA256 derive; 8/9: RSA-SHA256 PKCS#1 v1.5 sign/verify; 10/11: RSAES-PKCS1-v1_5 encrypt/decrypt; 12/13: AES-CCM encrypt/decrypt; 14/15: RSA-PSS-SHA256 sign/verify; 16/17: RSA-OAEP-SHA256 encrypt/decrypt. For selectors 2..17, aux is the key object slot (0..7). |
 | 2 | INIT | Initialize a digest or MAC state with `_utee_hash_init`. |
 | 3 | UPDATE | Pass `data` to `_utee_hash_update`. |
 | 4 | FINAL | Pass `data` to `_utee_hash_final` with output capacity `aux` (0..64). |
@@ -61,7 +61,7 @@ Each invocation begins with both arrays empty. The opcodes are:
 | 23 | AUTHENC_UPDATE_PAYLOAD | Process payload `data`; `aux` is output capacity (0..256). |
 | 24 | AUTHENC_ENC_FINAL | Encrypt final payload `data`; `aux` is output capacity (0..256), and `selector` is tag length in bytes (zero means 16, maximum 16). |
 | 25 | AUTHENC_DEC_FINAL | `data` is the tag followed by final ciphertext. `selector` is tag length in bytes (zero means 16, maximum 16), and `aux` is plaintext capacity (0..256). |
-| 26 | ASYMM_OPERATE | Sign or RSA encrypt/decrypt `data`; `aux` is output capacity (0..256). The full successful output is retained for opcode 27. |
+| 26 | ASYMM_OPERATE | Sign or RSA encrypt/decrypt data; aux is output capacity (0..256). selector 0 uses data; selector 1 uses the previous successful opcode 26 output as input. The full successful output is retained for opcodes 26/27. |
 | 27 | ASYMM_VERIFY | Verify a signature over a digest in `data`. With `selector` 0, `aux` is digest length and the remaining `data` bytes are the signature; with `selector` 1, `data` is the digest and the signature is the last successful opcode 26 output. |
 
 The HMAC success sequence is OBJ_ALLOC (HMAC key) -> OBJ_POPULATE ->
@@ -135,7 +135,7 @@ make -C ~/optee/build -j4 check \
 ~/optee/optee_test/ta/core_fuzz_ta/host/run_qemu_smoke.sh
 ```
 
-The smoke script regenerates all 17 seed files, then uses virtio 9p to
+The smoke script regenerates all 21 seed files, then uses virtio 9p to
 share `~/optee` with QEMU. It copies the latest signed TA into the guest and
 checks the original five seed cases, then exits QEMU. The newer crypto/object
 cases enter the fuzzer baseline corpus; the stage-1 smoke script does not
@@ -155,7 +155,7 @@ while testing the sanitizer with a recovery callback. Its `[ASAN]` lines and
 
 ## Seeds
 
-`make_seeds.py` generates 17 reproducible files in `seeds/`. These generated
+`make_seeds.py` generates 21 reproducible files in `seeds/`. These generated
 files are ignored by Git. Run
 `python3 ~/optee/optee_test/ta/core_fuzz_ta/make_seeds.py` to create them without
 running the smoke test.
@@ -181,14 +181,20 @@ running the smoke test.
 - `state_copy_sha256.bin`: copy an initialized SHA-256 state and finalize both
   copies independently.
 - `aes_ctr.bin`: AES-CTR initialization, update and final with a fixed key and IV.
+- `aes_ctr_decrypt.bin`: decrypt the matching AES-CTR known ciphertext.
 - `hkdf_sha256.bin`: derive a 32-byte generic secret from HKDF IKM and salt.
 - `random_32.bin`: request 32 random bytes.
 - `gcm_encrypt.bin`: AES-GCM initialization, AAD, payload update and encryption
   finalization with a 16-byte tag.
 - `gcm_decrypt_empty.bin`: authenticate the AES-GCM empty-message test vector;
   its data begins with the known 16-byte tag.
+- `ccm_encrypt.bin` and `ccm_decrypt.bin`: AES-CCM encrypt and authenticate
+  the same `hello` payload with AAD and a 16-byte tag.
 - `rsa_sign_verify.bin`: generate a 2048-bit RSA keypair, copy it before the
   signing state consumes the original, then sign and verify a SHA-256 digest.
+- `rsa_modes.bin`: generate one RSA keypair, then exercise RSA-PSS-SHA256
+  sign/verify, RSAES-PKCS1-v1_5 encrypt/decrypt, and RSA-OAEP-SHA256
+  encrypt/decrypt using the previous asymmetric result as the next input.
 
 Run the same file repeatedly with `core_fuzz_ta_ca INPUT_FILE [REPEAT_COUNT]`.
 The client opens a new TA session for every repetition and prints each syscall
@@ -226,7 +232,7 @@ FUZZ_DURATION_SECONDS=10800 FUZZ_TIMEOUT=14400 \
   ~/optee/optee_test/ta/core_fuzz_ta/host/run_qemu_fuzz.sh 100000000 1 on
 ```
 
-The duration starts after all 17 seeds have been validated and any HOPPER
+The duration starts after all 21 seeds have been validated and any HOPPER
 baseline probes have completed; total VM wall time can therefore exceed three
 hours. `FUZZ_DONE` reports `ELAPSED_SEC` and `STOP_REASON=duration` when the time
 limit ends the mutation loop, or `STOP_REASON=iterations` if the iteration

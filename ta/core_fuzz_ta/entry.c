@@ -260,6 +260,24 @@ static TEE_Result run(uint32_t param_types, TEE_Param params[4])
 				mode = selector == 10 ? TEE_MODE_ENCRYPT :
 					TEE_MODE_DECRYPT;
 				break;
+			case 12:
+			case 13:
+				algo = TEE_ALG_AES_CCM;
+				mode = selector == 12 ? TEE_MODE_ENCRYPT :
+					TEE_MODE_DECRYPT;
+				break;
+			case 14:
+			case 15:
+				algo = TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256;
+				mode = selector == 14 ? TEE_MODE_SIGN :
+					TEE_MODE_VERIFY;
+				break;
+			case 16:
+			case 17:
+				algo = TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA256;
+				mode = selector == 16 ? TEE_MODE_ENCRYPT :
+					TEE_MODE_DECRYPT;
+				break;
 			default:
 				step = TEE_ERROR_BAD_PARAMETERS;
 				break;
@@ -571,14 +589,24 @@ static TEE_Result run(uint32_t param_types, TEE_Param params[4])
 		}
 		case CORE_FUZZ_TA_ASYMM_OPERATE: {
 			uint8_t value[CORE_FUZZ_TA_TEMP_OUTPUT_SIZE] = { 0 };
+			const void *src_data = data;
+			size_t src_len = data_len;
 			uint64_t value_len = aux;
 
-			if (aux > sizeof(value)) {
+			if (selector > 1 || aux > sizeof(value)) {
 				step = TEE_ERROR_BAD_PARAMETERS;
 				break;
 			}
+			if (selector == 1) {
+				if (!ctx.asymm_result_len) {
+					step = TEE_ERROR_BAD_STATE;
+					break;
+				}
+				src_data = ctx.asymm_result;
+				src_len = ctx.asymm_result_len;
+			}
 			step = _utee_asymm_operate(ctx.crypto_state_handles[slot],
-				NULL, 0, data, data_len, value, &value_len);
+				NULL, 0, src_data, src_len, value, &value_len);
 			write_result_length(record, value_len);
 			if (step == TEE_SUCCESS) {
 				copy_result_prefix(record, value, value_len);
