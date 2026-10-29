@@ -6,6 +6,21 @@ concurrency:
   group: ci-${{ github.ref }}  # unique per branch
   cancel-in-progress: true     # cancel previous runs on the same branch
 jobs:
+  core_fuzz_ta_rust:
+    # Host-side checks of the optional LibAFL runner. They need no TEE; the
+    # QEMU jobs below build against upstream optee_os, which has no coverage
+    # PTA, so the runner itself is not cross-built there.
+    name: core_fuzz_ta Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.86
+        run: |
+          rustup toolchain install 1.86.0 --profile minimal \
+            --component rustfmt --component clippy
+          rustup default 1.86.0
+      - name: rustfmt, clippy and tests
+        run: make -C host/core_fuzz_ta check
   QEMUv8_checks_image_build:
     name: Build QEMUv8 image
     runs-on: ubuntu-latest

@@ -1,7 +1,12 @@
 #!/usr/bin/expect -f
 # SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Jaehun Lee
+#
+# Drives the QEMU guest for run_qemu_fuzz.sh and run_qemu_replay.sh. The
+# paths below come from qemu_common.sh through the environment.
 set timeout 240
-log_user 0
+# Mirror guest console output to the terminal and the log file.
+log_user 1
 
 if {$argc != 1} {
     puts stderr "usage: $argv0 fuzz|replay"
@@ -122,21 +127,20 @@ puts "PASS: normal-world boot"
 set_phase setup
 run_command "mkdir -p /mnt/host" "mkdir"
 run_command "mount -t 9p -o trans=virtio,version=9p2000.L host /mnt/host" "virtfs"
-run_command "cp /mnt/host/out-br/target/lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-refresh"
-run_command "test -f /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-installed"
-set base "/mnt/host/optee_test/ta/core_fuzz_ta"
+set guest_ta "/lib/optee_armtz/$::env(FUZZ_TA_UUID).ta"
+run_command "cp $::env(FUZZ_GUEST_TA) $guest_ta" "ta-refresh"
+run_command "test -f $guest_ta" "ta-installed"
+set seeds $::env(FUZZ_GUEST_SEED_DIR)
+set fuzzer $::env(FUZZ_GUEST_RUNNER)
 if {$mode eq "fuzz"} {
-    run_command "cmp /lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta /mnt/host/out-br/target/lib/optee_armtz/92ea581c-d6ec-449e-9aa6-cf93aa2b44dd.ta" "ta-current"
-    set command "$base/host/core_fuzz_ta_fuzzer $base/seeds /mnt/host/out/fuzz $::env(FUZZ_ITERATIONS) $::env(FUZZ_RNG_SEED) --hopper=$::env(FUZZ_HOPPER_MODE)"
+    run_command "cmp $guest_ta $::env(FUZZ_GUEST_TA)" "ta-current"
+    set command "$fuzzer $seeds $::env(FUZZ_GUEST_OUTPUT_DIR) $::env(FUZZ_ITERATIONS) $::env(FUZZ_RNG_SEED) --execution-timeout-seconds=$::env(FUZZ_EXECUTION_TIMEOUT_SECONDS)"
     if {[info exists ::env(FUZZ_DURATION_SECONDS)] &&
         $::env(FUZZ_DURATION_SECONDS) ne "0"} {
         append command " --duration-seconds=$::env(FUZZ_DURATION_SECONDS)"
     }
 } else {
-    set command "$base/host/core_fuzz_ta_ca --reproduce $::env(FUZZ_REPLAY_GUEST_INPUT)"
-    if {$::env(FUZZ_REPLAY_TARGET_INDEX) ne "-1"} {
-        append command " $::env(FUZZ_REPLAY_TARGET_INDEX)"
-    }
+    set command "$fuzzer --replay $::env(FUZZ_REPLAY_GUEST_INPUT)"
 }
 set_phase $payload_phase
 send -i $qemu_spawn -- "$command; echo ${payload_label}:\$?\r"

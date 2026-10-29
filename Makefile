@@ -55,12 +55,23 @@ test_plugin:
 			     --no-builtin-variables \
 			     O=$(out-dir)
 
+# Optional LibAFL runner for ta/core_fuzz_ta. Not part of 'all': it needs a
+# Rust toolchain and a TA dev kit built with CFG_CORE_FUZZ_COVERAGE=y. See
+# host/core_fuzz_ta/README.md.
+.PHONY: core_fuzz_ta
+core_fuzz_ta:
+	$(q)$(MAKE) -C host/core_fuzz_ta CROSS_COMPILE="$(CROSS_COMPILE_HOST)" \
+			     --no-builtin-variables \
+			     O=$(out-dir) \
+			     $@
+
 .PHONY: clean
 ifneq ($(wildcard $(TA_DEV_KIT_DIR)/host_include/conf.mk),)
 clean:
 	$(q)$(MAKE) -C host/xtest O=$(out-dir) $@
 	$(q)$(MAKE) -C ta O=$(out-dir) $@
 	$(q)$(MAKE) -C host/supp_plugin O=$(out-dir) $@
+	$(q)$(MAKE) -C host/core_fuzz_ta O=$(out-dir) $@
 else
 clean:
 	$(q)echo "TA_DEV_KIT_DIR is not correctly defined"
