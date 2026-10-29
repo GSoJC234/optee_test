@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
+/*
+ * Copyright (c) 2026, Jaehun Lee
+ */
 #ifndef FUZZ_CONTEXT_H
 #define FUZZ_CONTEXT_H
 

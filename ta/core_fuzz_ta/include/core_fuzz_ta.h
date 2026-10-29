@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
+/*
+ * Copyright (c) 2026, Jaehun Lee
+ */
 #ifndef CORE_FUZZ_TA_H
 #define CORE_FUZZ_TA_H
 
@@ -6,6 +9,8 @@
 	{ 0x9a, 0xa6, 0xcf, 0x93, 0xaa, 0x2b, 0x44, 0xdd } }
 #define CORE_FUZZ_TA_CMD_RUN 0U
 
+#define CORE_FUZZ_TA_INPUT_MAGIC "FZP2"
+#define CORE_FUZZ_TA_OUTPUT_MAGIC "FZR2"
 #define CORE_FUZZ_TA_VERSION 2U
 #define CORE_FUZZ_TA_MAX_INPUT 4096U
 #define CORE_FUZZ_TA_MAX_OPS 64U

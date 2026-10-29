@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
+/*
+ * Copyright (c) 2026, Jaehun Lee
+ */
 #ifndef USER_TA_HEADER_DEFINES_H
 #define USER_TA_HEADER_DEFINES_H
 

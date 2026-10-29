@@ -36,13 +36,17 @@ TA_DIRS := create_fail_test \
 	   subkey2 \
 	   nil_uuid
 
-TA_DIRS += core_fuzz_ta
 ifeq ($(CFG_SECURE_DATA_PATH),y)
 TA_DIRS += sdp_basic
 endif
 
 ifeq ($(CFG_TA_BTI),y)
 TA_DIRS += bti_test
+endif
+
+# Needs the coverage PTA, which only exists with CFG_CORE_FUZZ_COVERAGE=y
+ifeq ($(CFG_CORE_FUZZ_COVERAGE),y)
+TA_DIRS += core_fuzz_ta
 endif
 
 .PHONY: all
