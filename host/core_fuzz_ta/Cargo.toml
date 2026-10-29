@@ -1,0 +1,40 @@
+[package]
+name = "core-fuzz-ta-libafl"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+description = "LibAFL host runner for the OP-TEE core_fuzz_ta"
+license = "BSD-2-Clause"
+publish = false
+build = "build.rs"
+
+[features]
+default = ["runner"]
+# The QEMU-guest runner: compiles teec_shim.c, links libteec and builds the
+# binary. Without it only the portable library is built, so its tests run on
+# any development host.
+runner = []
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "core-fuzz-ta-libafl"
+path = "src/main.rs"
+required-features = ["runner"]
+
+[dependencies]
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+libafl = { version = "=0.15.2", default-features = false, features = ["std", "derive", "rand_trait"] }
+libafl_bolts = { version = "=0.15.2", default-features = false, features = ["std", "rand_trait", "serdeany_autoreg"] }
+
+[build-dependencies]
+cc = "1.2"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+cast_possible_truncation = "warn"
+multiple_unsafe_ops_per_block = "warn"
+undocumented_unsafe_blocks = "warn"
