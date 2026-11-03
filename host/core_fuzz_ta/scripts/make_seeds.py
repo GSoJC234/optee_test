@@ -234,6 +234,24 @@ def main() -> None:
             op(Opcode.ASYMM_VERIFY, slot=1, selector=1, data=rsa_digest),
             op(Opcode.FREE, slot=1),
         ),
+        "rsa_pss_sha256.bin": stream(
+            op(Opcode.OBJ_ALLOC, slot=0, selector=4, aux=1024),
+            op(Opcode.OBJ_GENERATE_KEY, slot=0, aux=1024),
+            op(Opcode.ALLOC, slot=0, selector=14, aux=0),
+            op(Opcode.ASYMM_OPERATE, slot=0, data=rsa_digest, aux=128),
+        ),
+        "rsaes_pkcs1v15.bin": stream(
+            op(Opcode.OBJ_ALLOC, slot=0, selector=4, aux=1024),
+            op(Opcode.OBJ_GENERATE_KEY, slot=0, aux=1024),
+            op(Opcode.ALLOC, slot=0, selector=10, aux=0),
+            op(Opcode.ASYMM_OPERATE, slot=0, data=b"v1.5", aux=128),
+        ),
+        "rsa_oaep_sha256.bin": stream(
+            op(Opcode.OBJ_ALLOC, slot=0, selector=4, aux=1024),
+            op(Opcode.OBJ_GENERATE_KEY, slot=0, aux=1024),
+            op(Opcode.ALLOC, slot=0, selector=16, aux=0),
+            op(Opcode.ASYMM_OPERATE, slot=0, data=b"oaep", aux=128),
+        ),
         "rsa_modes.bin": stream(*rsa_records),
     }
     for name, data in cases.items():

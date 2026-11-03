@@ -14,6 +14,7 @@
 
 #![warn(missing_docs)]
 
+pub mod algorithms;
 pub mod cli;
 mod crypto_mutator;
 pub mod mutator;

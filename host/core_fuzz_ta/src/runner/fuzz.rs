@@ -12,6 +12,7 @@ use std::{
 };
 
 use core_fuzz_ta_libafl::{
+    algorithms::AlgorithmSet,
     cli::FuzzConfig,
     mutator::CoreFuzzProgramMutator,
     output,
@@ -76,9 +77,15 @@ fn execute(
     coverage: &mut CoverageMap,
     run_dir: &Path,
     input: &[u8],
+    algorithms: AlgorithmSet,
     totals: &mut Totals,
     save_error: &Cell<Option<io::Error>>,
 ) -> ExitKind {
+    if !algorithms.allows_bytes(input) {
+        totals.rejected_inputs += 1;
+        coverage.clear();
+        return ExitKind::Ok;
+    }
     if let Err(error) = output::write_current(run_dir, input) {
         // Keep the first error; the campaign loop stops after this call.
         let first = save_error.take().unwrap_or(error);
@@ -160,14 +167,33 @@ fn report_completion(
 
 /// Runs a campaign as described by `config`.
 pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
-    let seed_count = output::count_seed_files(&config.seed_dir)?;
-    if seed_count == 0 {
-        return Err(format!("no .bin seeds in {}", config.seed_dir.display()).into());
-    }
     let artifacts = RunArtifacts::create(&config.output_root)?;
+    let selected_seed_dir = artifacts.root.join("selected-seeds");
+    fs::create_dir(&selected_seed_dir)?;
+    let mut seed_count = 0;
+    for entry in fs::read_dir(&config.seed_dir)? {
+        let entry = entry?;
+        if !entry.path().extension().is_some_and(|ext| ext == "bin") {
+            continue;
+        }
+        let bytes = fs::read(entry.path())?;
+        if config.algorithms.allows_bytes(&bytes) {
+            fs::write(selected_seed_dir.join(entry.file_name()), bytes)?;
+            seed_count += 1;
+        }
+    }
+    if seed_count == 0 {
+        return Err(format!(
+            "no seeds match algorithms={} in {}",
+            config.algorithms,
+            config.seed_dir.display()
+        )
+        .into());
+    }
     println!("FUZZ_RUN_DIR={}", artifacts.root.display());
     println!("FUZZ_ENGINE=libafl VERSION={LIBAFL_VERSION} WORKERS=1");
     println!("FUZZ_RNG_SEED={}", config.rng_seed);
+    println!("FUZZ_ALGORITHMS={}", config.algorithms);
     println!(
         "FUZZ_EXECUTION_TIMEOUT_SECONDS={}",
         config.execution_timeout.as_secs()
@@ -209,6 +235,7 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
             &mut coverage_map,
             &artifacts.root,
             bytes.as_slice(),
+            config.algorithms,
             &mut totals.borrow_mut(),
             &save_error,
         )
@@ -226,7 +253,7 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
         &mut fuzzer,
         &mut executor,
         &mut manager,
-        std::slice::from_ref(&config.seed_dir),
+        std::slice::from_ref(&selected_seed_dir),
     )?;
     check_save_error()?;
     let baseline_executions = *state.executions();
@@ -236,7 +263,8 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
         totals.borrow().coverage.seen_map_bytes(),
     );
 
-    let mutator = StdScheduledMutator::new(tuple_list!(CoreFuzzProgramMutator));
+    let mutator =
+        StdScheduledMutator::new(tuple_list!(CoreFuzzProgramMutator::new(config.algorithms)));
     let mut stages = tuple_list!(StdMutationalStage::with_max_iterations(
         mutator,
         NonZeroUsize::MIN,

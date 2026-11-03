@@ -6,9 +6,39 @@
 # core_fuzz_ta. See ../README.md.
 set -eu
 
-if [ "$#" -gt 2 ]; then
-    echo "usage: $0 [ITERATIONS] [RNG_SEED]" >&2
+ITERATIONS=200
+RNG_SEED=1
+ALGORITHMS=${FUZZ_ALGORITHMS:-all}
+position=0
+for argument do
+    case "$argument" in
+        --algorithms=*) ALGORITHMS=${argument#*=} ;;
+        --*) echo "usage: $0 [ITERATIONS] [RNG_SEED] [--algorithms=LIST]" >&2; exit 2 ;;
+        *)
+            position=$((position + 1))
+            case "$position" in
+                1) ITERATIONS=$argument ;;
+                2) RNG_SEED=$argument ;;
+                *) echo "usage: $0 [ITERATIONS] [RNG_SEED] [--algorithms=LIST]" >&2; exit 2 ;;
+            esac ;;
+    esac
+done
+if ! printf '%s' "$ALGORITHMS" | LC_ALL=C grep -Eq '^(all|[a-z0-9-]+(,[a-z0-9-]+)*)$'; then
+    echo "FUZZ_ALGORITHMS must be a comma-separated list of algorithm names" >&2
     exit 2
+fi
+if [ "$ALGORITHMS" != all ]; then
+    old_ifs=$IFS
+    IFS=,
+    for algorithm in $ALGORITHMS; do
+        case "$algorithm" in
+            sha256|sha512|hmac-sha256|aes-ctr|aes-gcm|hkdf|\
+            rsa-pkcs1v15-sha256|rsaes-pkcs1v15|aes-ccm|\
+            rsa-pss-sha256|rsa-oaep-sha256|random) ;;
+            *) echo "unsupported algorithm: $algorithm" >&2; exit 2 ;;
+        esac
+    done
+    IFS=$old_ifs
 fi
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -20,8 +50,6 @@ if ! flock -n 9; then
     echo "another core fuzz QEMU run owns the shared serial logs" >&2
     exit 2
 fi
-ITERATIONS=${1:-200}
-RNG_SEED=${2:-1}
 TIMEOUT=${FUZZ_TIMEOUT:-1800}
 DURATION=${FUZZ_DURATION_SECONDS:-0}
 EXEC_TIMEOUT=${FUZZ_EXECUTION_TIMEOUT_SECONDS:-360}
@@ -48,6 +76,11 @@ COVERAGE_MPI=$(ta_conf CFG_CORE_FUZZ_COVERAGE_MPI)
 echo "BUILD_KASAN=$KASAN BUILD_CORE_ASLR=$CORE_ASLR ENGINE=libafl"
 echo "COVERAGE_PROFILE base=on crypto_impl=$COVERAGE_CRYPTO_IMPL" \
     "tomcrypt=$COVERAGE_TOMCRYPT mpi=$COVERAGE_MPI"
+if [ "$COVERAGE_CRYPTO_IMPL:$COVERAGE_TOMCRYPT:$COVERAGE_MPI" != on:on:on ]; then
+    echo "Build OP-TEE once with CFG_CORE_FUZZ_COVERAGE=y and all crypto coverage flags enabled" >&2
+    exit 2
+fi
+echo "FUZZ_ALGORITHMS=$ALGORITHMS"
 build_runner
 python3 "$SCRIPT_DIR/make_seeds.py"
 marker=$(mktemp "$FUZZ_OUTPUT_DIR/.started-XXXXXX")
@@ -57,11 +90,13 @@ FUZZ_RNG_SEED="$RNG_SEED"
 FUZZ_TIMEOUT="$TIMEOUT"
 FUZZ_DURATION_SECONDS="$DURATION"
 FUZZ_EXECUTION_TIMEOUT_SECONDS="$EXEC_TIMEOUT"
+FUZZ_ALGORITHMS="$ALGORITHMS"
 FUZZ_NORMAL_LOG="$FUZZ_OUTPUT_DIR/last-normal.log"
 FUZZ_PHASE_FILE="$FUZZ_OUTPUT_DIR/last-phase.txt"
 rm -f "$FUZZ_PHASE_FILE"
 export FUZZ_ITERATIONS FUZZ_RNG_SEED FUZZ_TIMEOUT
 export FUZZ_DURATION_SECONDS FUZZ_EXECUTION_TIMEOUT_SECONDS
+export FUZZ_ALGORITHMS
 export FUZZ_OUTPUT_DIR FUZZ_GUEST_OUTPUT_DIR FUZZ_NORMAL_LOG FUZZ_PHASE_FILE
 
 cd "$ROOT/out/bin"
@@ -94,12 +129,16 @@ if [ -f serial1.log ]; then cp serial1.log "$latest/secure.log"; else : > "$late
     printf 'kasan=%s\ncore_aslr=%s\ncoverage_base=on\n' "$KASAN" "$CORE_ASLR"
     printf 'coverage_crypto_impl=%s\ncoverage_tomcrypt=%s\ncoverage_mpi=%s\n' \
         "$COVERAGE_CRYPTO_IMPL" "$COVERAGE_TOMCRYPT" "$COVERAGE_MPI"
+    printf 'algorithms=%s\n' "$ALGORITHMS"
     printf 'execution_timeout_seconds=%s\n' "$EXEC_TIMEOUT"
 } > "$latest/build-config.txt"
+MANIFEST_SEED_DIR="$SEED_DIR"
+if [ -d "$latest/selected-seeds" ]; then MANIFEST_SEED_DIR="$latest/selected-seeds"; fi
 python3 "$SCRIPT_DIR/run_artifacts.py" manifest \
     --output "$latest/manifest.json" --root "$ROOT" --mode fuzz \
     --ta "$TA_FILE" --runner "$RUNNER" --ta-conf "$TA_CONF" \
-    --seed-dir "$SEED_DIR" --iterations "$ITERATIONS" --rng-seed "$RNG_SEED" \
+    --seed-dir "$MANIFEST_SEED_DIR" --algorithms "$ALGORITHMS" \
+    --iterations "$ITERATIONS" --rng-seed "$RNG_SEED" \
     --duration "$DURATION" --qemu-timeout "$TIMEOUT" \
     --execution-timeout "$EXEC_TIMEOUT" \
     --max-auto-replay-hangs "$MAX_AUTO_REPLAY_HANGS"

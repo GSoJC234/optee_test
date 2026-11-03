@@ -18,6 +18,7 @@ use libafl::{
 use libafl_bolts::{Named, rands::Rand};
 
 use crate::{
+    algorithms::AlgorithmSet,
     crypto_mutator,
     program::{Operation, Program},
     protocol::{
@@ -33,7 +34,17 @@ const STRUCTURED_ACTIONS: usize = 9;
 
 /// LibAFL mutator that edits FZP2 programs field by field.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CoreFuzzProgramMutator;
+pub struct CoreFuzzProgramMutator {
+    algorithms: AlgorithmSet,
+}
+
+impl CoreFuzzProgramMutator {
+    /// Creates a mutator constrained to the selected algorithm set.
+    #[must_use]
+    pub fn new(algorithms: AlgorithmSet) -> Self {
+        Self { algorithms }
+    }
+}
 
 impl<S: HasRand> Mutator<BytesInput, S> for CoreFuzzProgramMutator {
     fn mutate(&mut self, state: &mut S, input: &mut BytesInput) -> Result<MutationResult, Error> {
@@ -43,7 +54,9 @@ impl<S: HasRand> Mutator<BytesInput, S> for CoreFuzzProgramMutator {
         };
         let original = input.mutator_bytes();
         match mutate_bytes(original, &mut choose) {
-            Some(candidate) if candidate != original => {
+            Some(candidate)
+                if candidate != original && self.algorithms.allows_bytes(&candidate) =>
+            {
                 *input = BytesInput::new(candidate);
                 Ok(MutationResult::Mutated)
             }

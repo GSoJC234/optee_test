@@ -5,7 +5,7 @@
 //! The two invocation forms are the ones `scripts/qemu_fuzz.exp` uses:
 //!
 //! ```text
-//! core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--duration-seconds=N] [--execution-timeout-seconds=N]
+//! core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--algorithms=LIST] [--duration-seconds=N] [--execution-timeout-seconds=N]
 //! core-fuzz-ta-libafl --replay INPUT_FILE [REPEAT_COUNT]
 //! ```
 
@@ -16,6 +16,7 @@ use std::{
     time::Duration,
 };
 
+use crate::algorithms::AlgorithmSet;
 use clap::{ArgGroup, CommandFactory, Parser, error::ErrorKind};
 
 /// Largest accepted `ITERATIONS`.
@@ -32,6 +33,8 @@ pub const MAX_REPEATS: u64 = 10_000;
 /// Settings for a fuzzing campaign.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FuzzConfig {
+    /// Algorithms whose operations may appear in a campaign input.
+    pub algorithms: AlgorithmSet,
     /// Directory with the `.bin` seed inputs.
     pub seed_dir: PathBuf,
     /// Directory below which a fresh `run-*` directory is created.
@@ -69,11 +72,15 @@ pub enum RunMode {
 #[command(
     name = "core-fuzz-ta-libafl",
     version,
-    override_usage = "core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--duration-seconds=N] [--execution-timeout-seconds=N]\n       \
+    override_usage = "core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--algorithms=LIST] [--duration-seconds=N] [--execution-timeout-seconds=N]\n       \
                       core-fuzz-ta-libafl --replay INPUT_FILE [REPEAT_COUNT]",
     group(ArgGroup::new("mode").required(true).args(["seed_dir", "replay"]))
 )]
 struct Cli {
+    /// Comma-separated TA algorithms (default: all).
+    #[arg(long, default_value = "all", conflicts_with = "replay")]
+    algorithms: AlgorithmSet,
+
     /// Directory containing `.bin` seed inputs
     #[arg(requires_all = ["output_dir", "iterations", "rng_seed"])]
     seed_dir: Option<PathBuf>,
@@ -142,6 +149,7 @@ impl Cli {
         ) {
             (Some(seed_dir), Some(output_root), Some(max_iterations), Some(rng_seed)) => {
                 Ok(RunMode::Fuzz(FuzzConfig {
+                    algorithms: self.algorithms,
                     seed_dir,
                     output_root,
                     max_iterations,
@@ -218,6 +226,7 @@ mod tests {
 
     fn fuzz(duration: Option<u64>) -> RunMode {
         RunMode::Fuzz(FuzzConfig {
+            algorithms: AlgorithmSet::default(),
             seed_dir: "seeds".into(),
             output_root: "out".into(),
             max_iterations: 200,
@@ -253,6 +262,12 @@ mod tests {
             panic!("expected fuzz mode");
         };
         assert_eq!(custom.execution_timeout, Duration::from_secs(600));
+        let RunMode::Fuzz(selected) =
+            parse_ok(&["seeds", "out", "200", "7", "--algorithms=aes-gcm,sha256"])
+        else {
+            panic!("expected fuzz mode")
+        };
+        assert_eq!(selected.algorithms.to_string(), "sha256,aes-gcm");
         assert_eq!(
             parse_ok(&["--replay", "in.bin"]),
             RunMode::Replay(ReplayConfig {
@@ -293,6 +308,10 @@ mod tests {
         );
         assert_eq!(
             parse_err(&["seeds", "out", "200", "7", "--execution-timeout-seconds=0"]),
+            ErrorKind::ValueValidation
+        );
+        assert_eq!(
+            parse_err(&["seeds", "out", "200", "7", "--algorithms=ecc"]),
             ErrorKind::ValueValidation
         );
         assert_eq!(

@@ -73,6 +73,7 @@ def write_manifest(args):
                 "build_config": coverage_config(Path(args.ta_conf)),
                 "files": {name: digest(path) for name, path in files.items()},
                 "parameters": {"iterations": args.iterations, "rng_seed": args.rng_seed,
+                               "algorithms": args.algorithms,
                                "duration_seconds": args.duration,
                                "qemu_timeout_seconds": args.qemu_timeout,
                                "execution_timeout_seconds": args.execution_timeout,
@@ -151,6 +152,7 @@ def main():
         manifest.add_argument("--" + name, required=True)
     for name in ("seed-dir", "input"):
         manifest.add_argument("--" + name)
+    manifest.add_argument("--algorithms")
     for name in ("iterations", "rng-seed", "duration", "qemu-timeout",
                  "execution-timeout", "replay-timeout", "max-auto-replay-hangs"):
         manifest.add_argument("--" + name, type=int)

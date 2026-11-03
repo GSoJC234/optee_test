@@ -134,7 +134,7 @@ set seeds $::env(FUZZ_GUEST_SEED_DIR)
 set fuzzer $::env(FUZZ_GUEST_RUNNER)
 if {$mode eq "fuzz"} {
     run_command "cmp $guest_ta $::env(FUZZ_GUEST_TA)" "ta-current"
-    set command "$fuzzer $seeds $::env(FUZZ_GUEST_OUTPUT_DIR) $::env(FUZZ_ITERATIONS) $::env(FUZZ_RNG_SEED) --execution-timeout-seconds=$::env(FUZZ_EXECUTION_TIMEOUT_SECONDS)"
+    set command "$fuzzer $seeds $::env(FUZZ_GUEST_OUTPUT_DIR) $::env(FUZZ_ITERATIONS) $::env(FUZZ_RNG_SEED) --execution-timeout-seconds=$::env(FUZZ_EXECUTION_TIMEOUT_SECONDS) --algorithms=$::env(FUZZ_ALGORITHMS)"
     if {[info exists ::env(FUZZ_DURATION_SECONDS)] &&
         $::env(FUZZ_DURATION_SECONDS) ne "0"} {
         append command " --duration-seconds=$::env(FUZZ_DURATION_SECONDS)"
