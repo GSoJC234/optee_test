@@ -30,7 +30,8 @@ def git_state(path):
 
 def coverage_config(path):
     names = ("CFG_CORE_FUZZ_COVERAGE", "CFG_CORE_SANITIZE_KADDRESS",
-             "CFG_CORE_ASLR", "CFG_CRYPTOLIB_NAME",
+             "CFG_CORE_SANITIZE_UNDEFINED", "CFG_SANITIZE_UNDEFINED_PANIC",
+             "CFG_CORE_ASLR", "CFG_TEE_RAM_VA_SIZE", "CFG_CRYPTOLIB_NAME",
              "CFG_CRYPTO_AES_GCM_FROM_CRYPTOLIB")
     selected = {}
     for line in path.read_text().splitlines():
@@ -96,6 +97,9 @@ def classify(exit_code, phase, secure, normal, payload_phase, hang_count=0):
     if "[ASAN]: access violation" in secure:
         return ("CORE_ASAN" if phase == payload_phase else "UNATTRIBUTED_ASAN",
                 "secure_console_asan_marker")
+    if "Undefined behavior " in secure:
+        return ("CORE_UBSAN" if phase == payload_phase else "UNATTRIBUTED_UBSAN",
+                "secure_console_ubsan_marker")
     if re.search(r"Panic at core/", secure):
         return ("CORE_PANIC" if phase == payload_phase else "UNATTRIBUTED_CORE_PANIC",
                 "secure_console_core_panic")

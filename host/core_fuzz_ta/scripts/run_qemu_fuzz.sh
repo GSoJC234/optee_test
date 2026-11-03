@@ -69,13 +69,21 @@ if [ "$DURATION" -gt 0 ] && [ "$TIMEOUT" -le "$DURATION" ]; then
 fi
 check_build
 KASAN=$(ta_conf CFG_CORE_SANITIZE_KADDRESS)
+UBSAN=$(ta_conf CFG_CORE_SANITIZE_UNDEFINED)
+UBSAN_PANIC=$(ta_conf CFG_SANITIZE_UNDEFINED_PANIC)
 CORE_ASLR=$(ta_conf CFG_CORE_ASLR)
 COVERAGE_CRYPTO_IMPL=$(ta_conf CFG_CORE_FUZZ_COVERAGE_CRYPTO_IMPL)
 COVERAGE_TOMCRYPT=$(ta_conf CFG_CORE_FUZZ_COVERAGE_TOMCRYPT)
 COVERAGE_MPI=$(ta_conf CFG_CORE_FUZZ_COVERAGE_MPI)
-echo "BUILD_KASAN=$KASAN BUILD_CORE_ASLR=$CORE_ASLR ENGINE=libafl"
+echo "BUILD_KASAN=$KASAN BUILD_UBSAN=$UBSAN" \
+    "BUILD_UBSAN_PANIC=$UBSAN_PANIC BUILD_CORE_ASLR=$CORE_ASLR ENGINE=libafl"
 echo "COVERAGE_PROFILE base=on crypto_impl=$COVERAGE_CRYPTO_IMPL" \
     "tomcrypt=$COVERAGE_TOMCRYPT mpi=$COVERAGE_MPI"
+if [ "$UBSAN" = on ] && [ "$UBSAN_PANIC" != on ]; then
+    echo "UBSan fuzzing requires CFG_SANITIZE_UNDEFINED_PANIC=y" \
+        "to attribute a report to current.bin" >&2
+    exit 2
+fi
 if [ "$COVERAGE_CRYPTO_IMPL:$COVERAGE_TOMCRYPT:$COVERAGE_MPI" != on:on:on ]; then
     echo "Build OP-TEE once with CFG_CORE_FUZZ_COVERAGE=y and all crypto coverage flags enabled" >&2
     exit 2
@@ -126,7 +134,8 @@ fi
 cp "$FUZZ_NORMAL_LOG" "$latest/normal.log" 2>/dev/null || : > "$latest/normal.log"
 if [ -f serial1.log ]; then cp serial1.log "$latest/secure.log"; else : > "$latest/secure.log"; fi
 {
-    printf 'kasan=%s\ncore_aslr=%s\ncoverage_base=on\n' "$KASAN" "$CORE_ASLR"
+    printf 'kasan=%s\nubsan=%s\nubsan_panic=%s\ncore_aslr=%s\ncoverage_base=on\n' \
+        "$KASAN" "$UBSAN" "$UBSAN_PANIC" "$CORE_ASLR"
     printf 'coverage_crypto_impl=%s\ncoverage_tomcrypt=%s\ncoverage_mpi=%s\n' \
         "$COVERAGE_CRYPTO_IMPL" "$COVERAGE_TOMCRYPT" "$COVERAGE_MPI"
     printf 'algorithms=%s\n' "$ALGORITHMS"
@@ -153,7 +162,7 @@ classification=$(python3 "$SCRIPT_DIR/run_artifacts.py" classify \
 echo "FUZZ_CLASSIFICATION=$classification phase=$phase evidence=$latest/status.json"
 echo "Fuzz artifacts: $latest"
 case "$classification" in
-    CORE_ASAN|CORE_PANIC|HANG_CANDIDATE)
+    CORE_ASAN|CORE_UBSAN|CORE_PANIC|HANG_CANDIDATE)
         if [ "$phase" = fuzz ] && [ -n "$exact_run_dir" ] && \
            [ -f "$exact_run_dir/current.bin" ]; then
             case "$classification" in
@@ -188,7 +197,7 @@ case "$classification" in
             echo "FUZZ_UNATTRIBUTED: $classification $latest"
         fi
         case "$classification" in HANG_CANDIDATE) exit 124 ;; *) exit 127 ;; esac ;;
-    UNATTRIBUTED_ASAN|UNATTRIBUTED_CORE_PANIC)
+    UNATTRIBUTED_ASAN|UNATTRIBUTED_UBSAN|UNATTRIBUTED_CORE_PANIC)
         echo "FUZZ_UNATTRIBUTED: $classification $latest"
         exit 127 ;;
 esac
