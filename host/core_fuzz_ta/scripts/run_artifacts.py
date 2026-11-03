@@ -60,6 +60,8 @@ def write_manifest(args):
              "tee_pageable": root / "optee_os/out/arm/core/tee-pageable_v2.bin",
              "ta": Path(args.ta).resolve(), "runner": Path(args.runner).resolve(),
              "ta_conf": Path(args.ta_conf).resolve()}
+    if args.broker:
+        files["broker"] = Path(args.broker).resolve()
     scripts = root / "optee_test/host/core_fuzz_ta/scripts"
     files.update({"fuzz_wrapper": scripts / "run_qemu_fuzz.sh",
                   "replay_wrapper": scripts / "run_qemu_replay.sh",
@@ -80,6 +82,8 @@ def write_manifest(args):
                                "execution_timeout_seconds": args.execution_timeout,
                                "replay_timeout_seconds": args.replay_timeout,
                                "max_auto_replay_hangs": args.max_auto_replay_hangs}}
+    if args.mode == "fuzz":
+        manifest["parameters"]["corpus_transport"] = "tcp" if args.broker else "local"
     if args.seed_dir:
         manifest["seeds"] = seed_set(Path(args.seed_dir))
     if args.input:
@@ -154,7 +158,7 @@ def main():
     manifest = commands.add_parser("manifest")
     for name in ("output", "root", "mode", "ta", "runner", "ta-conf"):
         manifest.add_argument("--" + name, required=True)
-    for name in ("seed-dir", "input"):
+    for name in ("seed-dir", "input", "broker"):
         manifest.add_argument("--" + name)
     manifest.add_argument("--algorithms")
     for name in ("iterations", "rng-seed", "duration", "qemu-timeout",

@@ -104,10 +104,52 @@ if [ "${FUZZ_WORKER_MODE:-0}" != 1 ] && [ "$WORKERS" -gt 1 ]; then
         exit 2
     fi
     build_runner
+    build_broker
     python3 "$SCRIPT_DIR/make_seeds.py"
     campaign=$(mktemp -d "$FUZZ_OUTPUT_DIR/campaign-XXXXXXXX")
     printf 'workers=%s\niterations=%s\nmaster_seed=%s\nalgorithms=%s\nduration_seconds=%s\n' \
         "$WORKERS" "$ITERATIONS" "$RNG_SEED" "$ALGORITHMS" "$DURATION" > "$campaign/config.txt"
+    port_file="$campaign/broker.port"
+    "$BROKER" "$port_file" > "$campaign/broker.log" 2>&1 &
+    broker_pid=$!
+    worker_pids=
+    cleanup_workers=1
+    cleanup_campaign() {
+        if [ "$cleanup_workers" -eq 1 ]; then
+            for worker_pid in $worker_pids; do
+                /bin/kill -TERM -- "-$worker_pid" 2>/dev/null || true
+            done
+            for worker_pid in $worker_pids; do
+                wait "$worker_pid" 2>/dev/null || true
+            done
+        fi
+        if [ -n "$broker_pid" ]; then
+            kill "$broker_pid" 2>/dev/null || true
+            wait "$broker_pid" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_campaign EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    ready_attempt=0
+    while [ ! -s "$port_file" ]; do
+        if ! kill -0 "$broker_pid" 2>/dev/null || [ "$ready_attempt" -ge 100 ]; then
+            echo "LibAFL broker did not start: $campaign/broker.log" >&2
+            exit 2
+        fi
+        ready_attempt=$((ready_attempt + 1))
+        sleep 0.1
+    done
+    broker_port=$(cat "$port_file")
+    case "$broker_port" in
+        ''|*[!0-9]*) echo "invalid LibAFL broker port" >&2; exit 2 ;;
+    esac
+    if [ "$broker_port" -eq 0 ] || [ "$broker_port" -gt 65535 ]; then
+        echo "invalid LibAFL broker port: $broker_port" >&2
+        exit 2
+    fi
+    printf 'transport=tcp\nbroker_port=%s\n' "$broker_port" >> "$campaign/config.txt"
     printf 'worker_id\tpid\n' > "$campaign/workers.tsv"
     base_iterations=$((ITERATIONS / WORKERS))
     extra_iterations=$((ITERATIONS % WORKERS))
@@ -122,10 +164,13 @@ if [ "${FUZZ_WORKER_MODE:-0}" != 1 ] && [ "$WORKERS" -gt 1 ]; then
             "$RNG_SEED" "$worker_id")
         FUZZ_WORKER_MODE=1 FUZZ_PREPARED=1 FUZZ_WORKERS=1 FUZZ_WORKER_ID="$worker_id" \
             FUZZ_OUTPUT_DIR="$campaign/worker-$worker_id" \
+            FUZZ_BROKER_ADDR="10.0.2.2:$broker_port" \
             QEMU_WORK_DIR="$campaign/worker-$worker_id/qemu" \
-            "$SCRIPT_DIR/run_qemu_fuzz.sh" "$worker_iterations" "$worker_seed" \
+            setsid "$SCRIPT_DIR/run_qemu_fuzz.sh" "$worker_iterations" "$worker_seed" \
             "--algorithms=$ALGORITHMS" > "$campaign/worker-$worker_id.log" 2>&1 9>&- &
-        printf '%s\t%s\n' "$worker_id" "$!" >> "$campaign/workers.tsv"
+        worker_pid=$!
+        worker_pids="$worker_pids $worker_pid"
+        printf '%s\t%s\n' "$worker_id" "$worker_pid" >> "$campaign/workers.tsv"
         worker_id=$((worker_id + 1))
     done
     overall_status=0
@@ -140,6 +185,23 @@ if [ "${FUZZ_WORKER_MODE:-0}" != 1 ] && [ "$WORKERS" -gt 1 ]; then
         echo "FUZZ_WORKER_DONE id=$worker_id status=$worker_status" \
             "log=$campaign/worker-$worker_id.log"
     done < "$campaign/workers.tsv"
+    cleanup_workers=0
+    if ! kill -0 "$broker_pid" 2>/dev/null; then
+        overall_status=1
+        echo "FUZZ_BROKER_ERROR broker exited early; see $campaign/broker.log" >&2
+    else
+        kill "$broker_pid" 2>/dev/null || true
+    fi
+    broker_status=0
+    wait "$broker_pid" 2>/dev/null || broker_status=$?
+    broker_pid=
+    trap - EXIT HUP INT TERM
+    case "$broker_status" in
+        0|143) ;;
+        *)
+            overall_status=1
+            echo "FUZZ_BROKER_ERROR status=$broker_status log=$campaign/broker.log" >&2 ;;
+    esac
     total_executions=0
     worker_id=0
     while [ "$worker_id" -lt "$WORKERS" ]; do
@@ -176,7 +238,7 @@ FUZZ_PHASE_FILE="$FUZZ_OUTPUT_DIR/last-phase.txt"
 rm -f "$FUZZ_PHASE_FILE"
 export FUZZ_ITERATIONS FUZZ_RNG_SEED FUZZ_TIMEOUT
 export FUZZ_DURATION_SECONDS FUZZ_EXECUTION_TIMEOUT_SECONDS
-export FUZZ_ALGORITHMS
+export FUZZ_ALGORITHMS FUZZ_BROKER_ADDR
 export FUZZ_OUTPUT_DIR FUZZ_GUEST_OUTPUT_DIR FUZZ_NORMAL_LOG FUZZ_PHASE_FILE
 
 cd "$QEMU_WORK_DIR"
@@ -213,12 +275,14 @@ if [ -f serial1.log ]; then cp serial1.log "$latest/secure.log"; else : > "$late
     printf 'algorithms=%s\n' "$ALGORITHMS"
     printf 'execution_timeout_seconds=%s\n' "$EXEC_TIMEOUT"
     printf 'worker_id=%s\n' "${FUZZ_WORKER_ID:-0}"
+    printf 'broker_addr=%s\n' "${FUZZ_BROKER_ADDR:-none}"
 } > "$latest/build-config.txt"
 MANIFEST_SEED_DIR="$SEED_DIR"
 if [ -d "$latest/selected-seeds" ]; then MANIFEST_SEED_DIR="$latest/selected-seeds"; fi
 python3 "$SCRIPT_DIR/run_artifacts.py" manifest \
     --output "$latest/manifest.json" --root "$ROOT" --mode fuzz \
-    --ta "$TA_FILE" --runner "$RUNNER" --ta-conf "$TA_CONF" \
+    --ta "$TA_FILE" --runner "$RUNNER" \
+    --broker "${FUZZ_BROKER_ADDR:+$BROKER}" --ta-conf "$TA_CONF" \
     --seed-dir "$MANIFEST_SEED_DIR" --algorithms "$ALGORITHMS" \
     --iterations "$ITERATIONS" --rng-seed "$RNG_SEED" \
     --duration "$DURATION" --qemu-timeout "$TIMEOUT" \

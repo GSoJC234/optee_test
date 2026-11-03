@@ -16,6 +16,7 @@
 #
 # Targets:
 #   core_fuzz_ta (default)  cross-build $(O)/core_fuzz_ta/core-fuzz-ta-libafl
+#   core_fuzz_ta_broker    build the host-side LibAFL TCP broker
 #   check                   rustfmt, clippy and tests of the portable library;
 #                           needs neither the inputs above nor a TEE
 #   clean                   remove $(O)/core_fuzz_ta
@@ -47,6 +48,7 @@ RUST_TARGET ?= $(rust-target-$(cc-arch))
 
 manifest := $(CURDIR)/Cargo.toml
 runner := $(build-dir)/core-fuzz-ta-libafl
+broker := $(build-dir)/core-fuzz-ta-broker
 
 # cargo does its own dependency tracking, so it runs on every invocation.
 # Only the cc crate in build.rs compiles C, and it gets the prefix explicitly.
@@ -83,6 +85,15 @@ endif
 			--bin core-fuzz-ta-libafl --target $(RUST_TARGET) \
 			-- -C linker=$(cross-prefix)gcc
 	$(q)cp $(build-dir)/cargo/$(RUST_TARGET)/release/core-fuzz-ta-libafl $(runner)
+
+# The broker runs on the development host, outside the QEMU guest.
+.PHONY: core_fuzz_ta_broker
+core_fuzz_ta_broker:
+	$(q)mkdir -p $(build-dir)
+	$(q)$(cargo-env) CARGO_TARGET_DIR=$(build-dir)/cargo-host \
+		$(CARGO) build --locked --release --no-default-features \
+			--manifest-path $(manifest) --bin core-fuzz-ta-broker
+	$(q)cp $(build-dir)/cargo-host/release/core-fuzz-ta-broker $(broker)
 
 .PHONY: check
 check:

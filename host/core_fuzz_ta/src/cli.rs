@@ -5,13 +5,14 @@
 //! The two invocation forms are the ones `scripts/qemu_fuzz.exp` uses:
 //!
 //! ```text
-//! core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--algorithms=LIST] [--duration-seconds=N] [--execution-timeout-seconds=N]
+//! core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--algorithms=LIST] [--duration-seconds=N] [--execution-timeout-seconds=N] [--broker-addr=HOST:PORT]
 //! core-fuzz-ta-libafl --replay INPUT_FILE [REPEAT_COUNT]
 //! ```
 
 use std::{
     ffi::{OsStr, OsString},
     fmt::Display,
+    net::SocketAddr,
     path::PathBuf,
     time::Duration,
 };
@@ -47,6 +48,8 @@ pub struct FuzzConfig {
     pub duration: Option<Duration>,
     /// Maximum wall-clock time for one TA invocation.
     pub execution_timeout: Duration,
+    /// Optional TCP broker for sharing interesting inputs across QEMU workers.
+    pub broker_addr: Option<SocketAddr>,
 }
 
 /// Settings for replaying one saved input.
@@ -72,7 +75,7 @@ pub enum RunMode {
 #[command(
     name = "core-fuzz-ta-libafl",
     version,
-    override_usage = "core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--algorithms=LIST] [--duration-seconds=N] [--execution-timeout-seconds=N]\n       \
+    override_usage = "core-fuzz-ta-libafl SEED_DIR OUTPUT_DIR ITERATIONS RNG_SEED [--algorithms=LIST] [--duration-seconds=N] [--execution-timeout-seconds=N] [--broker-addr=HOST:PORT]\n       \
                       core-fuzz-ta-libafl --replay INPUT_FILE [REPEAT_COUNT]",
     group(ArgGroup::new("mode").required(true).args(["seed_dir", "replay"]))
 )]
@@ -113,6 +116,10 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=MAX_EXECUTION_TIMEOUT_SECONDS)
     )]
     execution_timeout_seconds: Option<u64>,
+
+    /// TCP address of the campaign broker.
+    #[arg(long, conflicts_with = "replay")]
+    broker_addr: Option<SocketAddr>,
 
     /// Execute INPUT_FILE REPEAT_COUNT times (default 1) instead of fuzzing
     #[arg(
@@ -159,6 +166,7 @@ impl Cli {
                         self.execution_timeout_seconds
                             .unwrap_or(DEFAULT_EXECUTION_TIMEOUT_SECONDS),
                     ),
+                    broker_addr: self.broker_addr,
                 }))
             }
             _ => Err(usage_error(
@@ -233,6 +241,7 @@ mod tests {
             rng_seed: 7,
             duration: duration.map(Duration::from_secs),
             execution_timeout: Duration::from_secs(DEFAULT_EXECUTION_TIMEOUT_SECONDS),
+            broker_addr: None,
         })
     }
 
@@ -262,6 +271,15 @@ mod tests {
             panic!("expected fuzz mode");
         };
         assert_eq!(custom.execution_timeout, Duration::from_secs(600));
+        let RunMode::Fuzz(brokered) =
+            parse_ok(&["seeds", "out", "200", "7", "--broker-addr=10.0.2.2:28743"])
+        else {
+            panic!("expected fuzz mode");
+        };
+        assert_eq!(
+            brokered.broker_addr,
+            Some("10.0.2.2:28743".parse().unwrap())
+        );
         let RunMode::Fuzz(selected) =
             parse_ok(&["seeds", "out", "200", "7", "--algorithms=aes-gcm,sha256"])
         else {
@@ -355,6 +373,10 @@ mod tests {
         );
         assert_eq!(
             parse_err(&["--replay", "in.bin", "--execution-timeout-seconds=5"]),
+            ErrorKind::ArgumentConflict
+        );
+        assert_eq!(
+            parse_err(&["--replay", "in.bin", "--broker-addr=10.0.2.2:28743"]),
             ErrorKind::ArgumentConflict
         );
         assert_eq!(

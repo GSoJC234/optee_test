@@ -22,7 +22,10 @@ use core_fuzz_ta_libafl::{
 };
 use libafl::{
     corpus::{Corpus, OnDiskCorpus},
-    events::SimpleEventManager,
+    events::{
+        EventConfig, EventFirer, EventReceiver, EventRestarter, ProgressReporter, SendExiting,
+        SimpleEventManager, tcp::TcpEventManager,
+    },
     executors::{ExitKind, InProcessExecutor},
     feedbacks::{MaxMapFeedback, TimeoutFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
@@ -31,9 +34,9 @@ use libafl::{
     mutators::scheduled::StdScheduledMutator,
     schedulers::QueueScheduler,
     stages::mutational::StdMutationalStage,
-    state::{HasCorpus, HasExecutions, StdState},
+    state::{HasCorpus, HasExecutions, HasImported, StdState},
 };
-use libafl_bolts::{AsSlice, rands::StdRand, tuples::tuple_list};
+use libafl_bolts::{AsSlice, ClientId, rands::StdRand, tuples::tuple_list};
 
 use super::{coverage::CoverageMap, print_opcode_steps, print_opcode_totals, teec::TeecContext};
 
@@ -41,6 +44,8 @@ use super::{coverage::CoverageMap, print_opcode_steps, print_opcode_totals, teec
 const LIBAFL_VERSION: &str = "0.15.2";
 /// Iterations between `FUZZ_PROGRESS` lines.
 const PROGRESS_INTERVAL: u64 = 25;
+
+type FuzzState = StdState<OnDiskCorpus<BytesInput>, BytesInput, StdRand, OnDiskCorpus<BytesInput>>;
 
 /// Counters updated by the harness and read between executions.
 struct Totals {
@@ -167,6 +172,29 @@ fn report_completion(
 
 /// Runs a campaign as described by `config`.
 pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
+    if let Some(addr) = config.broker_addr {
+        // Never reuse another VM's observer map: each worker executes imported
+        // inputs against its own OP-TEE core before adding them to its corpus.
+        let manager = TcpEventManager::<(), BytesInput, FuzzState>::builder().build_from_client(
+            &addr,
+            ClientId(u32::MAX),
+            EventConfig::AlwaysUnique,
+        )?;
+        run_with_manager(config, manager)
+    } else {
+        let manager = SimpleEventManager::new(SimpleMonitor::new(|message| println!("{message}")));
+        run_with_manager(config, manager)
+    }
+}
+
+fn run_with_manager<EM>(config: &FuzzConfig, mut manager: EM) -> Result<(), Box<dyn Error>>
+where
+    EM: EventFirer<BytesInput, FuzzState>
+        + EventReceiver<BytesInput, FuzzState>
+        + EventRestarter<FuzzState>
+        + ProgressReporter<FuzzState>
+        + SendExiting,
+{
     let artifacts = RunArtifacts::create(&config.output_root)?;
     let selected_seed_dir = artifacts.root.join("selected-seeds");
     fs::create_dir(&selected_seed_dir)?;
@@ -192,6 +220,14 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
     }
     println!("FUZZ_RUN_DIR={}", artifacts.root.display());
     println!("FUZZ_ENGINE=libafl VERSION={LIBAFL_VERSION} WORKERS=1");
+    println!(
+        "FUZZ_CORPUS_TRANSPORT={}",
+        if config.broker_addr.is_some() {
+            "tcp"
+        } else {
+            "local"
+        }
+    );
     println!("FUZZ_RNG_SEED={}", config.rng_seed);
     println!("FUZZ_ALGORITHMS={}", config.algorithms);
     println!(
@@ -215,7 +251,6 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
         &mut objective,
     )?;
     let mut fuzzer = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
-    let mut manager = SimpleEventManager::new(SimpleMonitor::new(|message| println!("{message}")));
 
     let totals = RefCell::new(Totals {
         coverage: CoverageStats::new(coverage_map.len()),
@@ -270,6 +305,7 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
         NonZeroUsize::MIN,
     ));
     let started = Instant::now();
+    let mut last_imported = 0;
     let mut iterations_done = 0;
     for iteration in 1..=config.max_iterations {
         if config
@@ -280,6 +316,14 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
         }
         fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
         check_save_error()?;
+        let imported = *state.imported();
+        if imported > last_imported {
+            println!(
+                "FUZZ_CORPUS_IMPORT interesting={} total={imported}",
+                imported - last_imported
+            );
+            last_imported = imported;
+        }
         iterations_done = iteration;
         if iteration % PROGRESS_INTERVAL == 0 || iteration == config.max_iterations {
             report_progress(
@@ -293,6 +337,7 @@ pub(crate) fn run(config: &FuzzConfig) -> Result<(), Box<dyn Error>> {
     }
 
     let harness_error = totals.borrow().invoke_errors > 0;
+    println!("FUZZ_CORPUS_IMPORTED={}", state.imported());
     report_completion(
         iterations_done,
         state.executions().saturating_sub(baseline_executions),

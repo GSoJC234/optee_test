@@ -73,6 +73,11 @@ proc stop_children {} {
     terminate_spawn $::qemu_spawn
     terminate_spawn $::secure_spawn
 }
+# QEMU's Expect PTY gives it a separate process group. Stop it explicitly
+# when the campaign parent terminates this worker's process group.
+trap {stop_children; exit 143} SIGTERM
+trap {stop_children; exit 130} SIGINT
+trap {stop_children; exit 129} SIGHUP
 proc fail {message code} {
     puts stderr "FAIL: $message (phase=$::phase)"
     stop_children
@@ -138,6 +143,9 @@ if {$mode eq "fuzz"} {
     if {[info exists ::env(FUZZ_DURATION_SECONDS)] &&
         $::env(FUZZ_DURATION_SECONDS) ne "0"} {
         append command " --duration-seconds=$::env(FUZZ_DURATION_SECONDS)"
+    }
+    if {[info exists ::env(FUZZ_BROKER_ADDR)] && $::env(FUZZ_BROKER_ADDR) ne ""} {
+        append command " --broker-addr=$::env(FUZZ_BROKER_ADDR)"
     }
 } else {
     set command "$fuzzer --replay $::env(FUZZ_REPLAY_GUEST_INPUT)"

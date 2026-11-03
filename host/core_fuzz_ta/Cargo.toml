@@ -23,9 +23,13 @@ name = "core-fuzz-ta-libafl"
 path = "src/main.rs"
 required-features = ["runner"]
 
+[[bin]]
+name = "core-fuzz-ta-broker"
+path = "src/bin/broker.rs"
+
 [dependencies]
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
-libafl = { version = "=0.15.2", default-features = false, features = ["std", "derive", "rand_trait"] }
+libafl = { version = "=0.15.2", default-features = false, features = ["std", "derive", "rand_trait", "tcp_manager"] }
 libafl_bolts = { version = "=0.15.2", default-features = false, features = ["std", "rand_trait", "serdeany_autoreg"] }
 
 [build-dependencies]

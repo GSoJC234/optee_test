@@ -38,6 +38,7 @@ OPTEE_CLIENT_EXPORT=${OPTEE_CLIENT_EXPORT:-"$BR_SYSROOT/usr"}
 CROSS_COMPILE=${CROSS_COMPILE:-"$ROOT/out-br/host/bin/aarch64-linux-gnu-"}
 RUNNER_BUILD_DIR="$FUZZER_DIR/out"
 RUNNER="$RUNNER_BUILD_DIR/core_fuzz_ta/core-fuzz-ta-libafl"
+BROKER="$RUNNER_BUILD_DIR/core_fuzz_ta/core-fuzz-ta-broker"
 SEED_DIR="$FUZZER_DIR/out/seeds"
 
 # Prints "on" or "off" for a boolean CFG_ option of the TA dev kit.
@@ -64,6 +65,10 @@ build_runner() {
     make -C "$FUZZER_DIR" O="$RUNNER_BUILD_DIR" CROSS_COMPILE="$CROSS_COMPILE" \
         TA_DEV_KIT_DIR="$TA_DEV_KIT_DIR" \
         OPTEE_CLIENT_EXPORT="$OPTEE_CLIENT_EXPORT" core_fuzz_ta
+}
+
+build_broker() {
+    make -C "$FUZZER_DIR" O="$RUNNER_BUILD_DIR" core_fuzz_ta_broker
 }
 
 # Validates FUZZ_OUTPUT_DIR, creates it and makes it absolute.
