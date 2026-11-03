@@ -31,6 +31,8 @@ use crate::{
 const RAW_MUTATION_DENOMINATOR: usize = 5;
 /// Number of structured edit kinds in [`mutate_program`].
 const STRUCTURED_ACTIONS: usize = 9;
+/// One quarter of length edits use the syscall-specific boundary table.
+const BOUNDARY_LENGTH_DENOMINATOR: usize = 4;
 
 /// LibAFL mutator that edits FZP2 programs field by field.
 #[derive(Clone, Copy, Debug, Default)]
@@ -215,8 +217,17 @@ where
     F: FnMut(usize) -> usize,
 {
     let operation = random_record(program, choose);
-    let values = crypto_mutator::aux_values(operation.opcode, operation.selector);
-    operation.aux = choose_other(choose, values, operation.aux);
+    if choose(BOUNDARY_LENGTH_DENOMINATOR) == 0 {
+        let values = crypto_mutator::boundary_aux_values(
+            operation.opcode,
+            operation.selector,
+            operation.data.len(),
+        );
+        operation.aux = choose_other(choose, &values, operation.aux);
+    } else {
+        let values = crypto_mutator::aux_values(operation.opcode, operation.selector);
+        operation.aux = choose_other(choose, values, operation.aux);
+    }
     true
 }
 
@@ -243,8 +254,14 @@ where
     let index = choose(program.operations.len());
     let current_len = program.operations[index].data.len();
     let max_data_len = MAX_INPUT_SIZE.saturating_sub(total_len - current_len);
-    let candidates: Vec<usize> = crypto_mutator::DATA_LENGTHS
-        .into_iter()
+    let lengths = if choose(BOUNDARY_LENGTH_DENOMINATOR) == 0 {
+        crypto_mutator::boundary_data_lengths(program.operations[index].opcode)
+    } else {
+        &crypto_mutator::DATA_LENGTHS
+    };
+    let candidates: Vec<usize> = lengths
+        .iter()
+        .copied()
         .filter(|length| *length <= max_data_len)
         .collect();
     if candidates.is_empty() {

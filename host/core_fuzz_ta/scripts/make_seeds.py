@@ -254,6 +254,70 @@ def main() -> None:
         ),
         "rsa_modes.bin": stream(*rsa_records),
     }
+
+    # These capacities straddle the output sizes needed by core crypto syscalls.
+    # Keep the successful neighbor beside each short-buffer seed.
+    for capacity in (31, 32, 33):
+        cases[f"boundary_sha256_out_{capacity}.bin"] = stream(
+            op(Opcode.ALLOC), op(Opcode.INIT),
+            op(Opcode.UPDATE, data=b"abc"),
+            op(Opcode.FINAL, aux=capacity), op(Opcode.FREE),
+        )
+    for capacity in (63, 64, 65):
+        cases[f"boundary_sha512_out_{capacity}.bin"] = stream(
+            op(Opcode.ALLOC, selector=1), op(Opcode.INIT),
+            op(Opcode.UPDATE, data=b"abc"),
+            op(Opcode.FINAL, aux=capacity), op(Opcode.FREE),
+        )
+    # LibTomCrypt SHA finalization changes padding path at 56 and 112 bytes.
+    for length in (55, 56, 57):
+        cases[f"boundary_sha256_input_{length}.bin"] = stream(
+            op(Opcode.ALLOC), op(Opcode.INIT),
+            op(Opcode.UPDATE, data=bytes(length)),
+            op(Opcode.FINAL, aux=32), op(Opcode.FREE),
+        )
+    for length in (111, 112, 113):
+        cases[f"boundary_sha512_input_{length}.bin"] = stream(
+            op(Opcode.ALLOC, selector=1), op(Opcode.INIT),
+            op(Opcode.UPDATE, data=bytes(length)),
+            op(Opcode.FINAL, aux=64), op(Opcode.FREE),
+        )
+    for capacity in (15, 16, 17):
+        cases[f"boundary_aes_ctr_out_{capacity}.bin"] = stream(
+            op(Opcode.OBJ_ALLOC, slot=4, selector=2, aux=128),
+            op(Opcode.OBJ_POPULATE, slot=4, data=zero_aes_key),
+            op(Opcode.ALLOC, selector=3, aux=4),
+            op(Opcode.CIPHER_INIT, data=bytes(16)),
+            op(Opcode.CIPHER_UPDATE, data=bytes(16), aux=capacity),
+            op(Opcode.CIPHER_FINAL), op(Opcode.FREE),
+        )
+    for length in (15, 17):
+        cases[f"boundary_aes_ctr_input_{length}.bin"] = stream(
+            op(Opcode.OBJ_ALLOC, slot=4, selector=2, aux=128),
+            op(Opcode.OBJ_POPULATE, slot=4, data=zero_aes_key),
+            op(Opcode.ALLOC, selector=3, aux=4),
+            op(Opcode.CIPHER_INIT, data=bytes(16)),
+            op(Opcode.CIPHER_UPDATE, data=bytes(length), aux=length),
+            op(Opcode.CIPHER_FINAL), op(Opcode.FREE),
+        )
+    for capacity in (4, 5, 6):
+        cases[f"boundary_gcm_payload_out_{capacity}.bin"] = stream(
+            op(Opcode.OBJ_ALLOC, slot=4, selector=2, aux=128),
+            op(Opcode.OBJ_POPULATE, slot=4, data=zero_aes_key),
+            op(Opcode.ALLOC, selector=5, aux=4),
+            op(Opcode.AUTHENC_INIT, data=zero_nonce, selector=16,
+               aux=(3 << 8) | 5),
+            op(Opcode.AUTHENC_UPDATE_AAD, data=b"aad"),
+            op(Opcode.AUTHENC_UPDATE_PAYLOAD, data=b"hello", aux=capacity),
+            op(Opcode.AUTHENC_ENC_FINAL, selector=16), op(Opcode.FREE),
+        )
+    for capacity in (31, 32, 33):
+        cases[f"boundary_object_attr_out_{capacity}.bin"] = stream(
+            op(Opcode.OBJ_ALLOC, slot=1, aux=256),
+            op(Opcode.OBJ_POPULATE, slot=1, data=hmac_key),
+            op(Opcode.OBJ_GET_ATTR, slot=1, aux=capacity),
+            op(Opcode.OBJ_CLOSE, slot=1),
+        )
     for name, data in cases.items():
         (SEEDS / name).write_bytes(data)
         print(f"{name}: {len(data)} bytes")
