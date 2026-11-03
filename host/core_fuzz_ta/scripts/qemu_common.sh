@@ -102,3 +102,19 @@ setup_qemu() {
     FUZZ_GUEST_SEED_DIR=$(guest_path "$SEED_DIR")
     export QEMU QEMU_CHECK_ARGS FUZZ_TA_UUID FUZZ_GUEST_TA FUZZ_GUEST_RUNNER FUZZ_GUEST_SEED_DIR
 }
+
+# Keep QEMU's relative boot paths and serial1.log private to this worker.
+prepare_qemu_workdir() {
+    QEMU_WORK_DIR=${QEMU_WORK_DIR:-"$FUZZ_OUTPUT_DIR/qemu"}
+    mkdir -p "$QEMU_WORK_DIR"
+    for name in Image linux.bin uImage rootfs.cpio.uboot bl1.bin bl2.bin \
+                bl31.bin bl32.bin bl32_extra1.bin bl32_extra2.bin bl33.bin \
+                rootfs.cpio.gz qemu_v8.dtb; do
+        source_file="$ROOT/out/bin/$name"
+        if [ -e "$source_file" ]; then
+            ln -sfn "$source_file" "$QEMU_WORK_DIR/$name"
+        fi
+    done
+    QEMU_WORK_DIR=$(CDPATH='' cd -- "$QEMU_WORK_DIR" && pwd -P)
+    export QEMU_WORK_DIR
+}

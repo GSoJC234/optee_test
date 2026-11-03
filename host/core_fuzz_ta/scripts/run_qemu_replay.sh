@@ -57,14 +57,16 @@ echo "BUILD_KASAN=$KASAN BUILD_UBSAN=$UBSAN" \
     "BUILD_UBSAN_PANIC=$UBSAN_PANIC BUILD_CORE_ASLR=$CORE_ASLR"
 echo "COVERAGE_PROFILE base=on crypto_impl=$COVERAGE_CRYPTO_IMPL" \
     "tomcrypt=$COVERAGE_TOMCRYPT mpi=$COVERAGE_MPI"
-build_runner >/dev/null
+if [ "${FUZZ_PREPARED:-0}" != 1 ]; then build_runner >/dev/null; fi
 setup_qemu
+if [ -z "${QEMU_WORK_DIR:-}" ]; then QEMU_WORK_DIR="$REPLAY_DIR/qemu"; fi
+prepare_qemu_workdir
 FUZZ_REPLAY_GUEST_INPUT="$(guest_path "$REPLAY_DIR")/input.bin"
 FUZZ_REPLAY_NORMAL_LOG="$REPLAY_DIR/normal.log"
 FUZZ_REPLAY_PHASE_FILE="$REPLAY_DIR/phase.txt"
 export FUZZ_REPLAY_GUEST_INPUT FUZZ_REPLAY_NORMAL_LOG FUZZ_REPLAY_PHASE_FILE FUZZ_REPLAY_TIMEOUT
 
-cd "$ROOT/out/bin"
+cd "$QEMU_WORK_DIR"
 status=0
 rm -f "$FUZZ_REPLAY_PHASE_FILE"
 expect "$SCRIPT_DIR/qemu_fuzz.exp" replay 9>&- || status=$?

@@ -8,18 +8,24 @@ set -eu
 
 ITERATIONS=200
 RNG_SEED=1
+WORKERS=${FUZZ_WORKERS:-1}
 ALGORITHMS=${FUZZ_ALGORITHMS:-all}
 position=0
 for argument do
     case "$argument" in
         --algorithms=*) ALGORITHMS=${argument#*=} ;;
-        --*) echo "usage: $0 [ITERATIONS] [RNG_SEED] [--algorithms=LIST]" >&2; exit 2 ;;
+        --workers=*) WORKERS=${argument#*=} ;;
+        --*)
+            echo "usage: $0 [ITERATIONS] [RNG_SEED] [--algorithms=LIST] [--workers=N]" >&2
+            exit 2 ;;
         *)
             position=$((position + 1))
             case "$position" in
                 1) ITERATIONS=$argument ;;
                 2) RNG_SEED=$argument ;;
-                *) echo "usage: $0 [ITERATIONS] [RNG_SEED] [--algorithms=LIST]" >&2; exit 2 ;;
+                *)
+                    echo "usage: $0 [ITERATIONS] [RNG_SEED] [--algorithms=LIST] [--workers=N]" >&2
+                    exit 2 ;;
             esac ;;
     esac
 done
@@ -45,11 +51,6 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/qemu_common.sh"
 setup_output_dir
 FUZZ_GUEST_OUTPUT_DIR=$(guest_path "$FUZZ_OUTPUT_DIR")
-exec 9>"$FUZZ_OUTPUT_DIR/.qemu.lock"
-if ! flock -n 9; then
-    echo "another core fuzz QEMU run owns the shared serial logs" >&2
-    exit 2
-fi
 TIMEOUT=${FUZZ_TIMEOUT:-1800}
 DURATION=${FUZZ_DURATION_SECONDS:-0}
 EXEC_TIMEOUT=${FUZZ_EXECUTION_TIMEOUT_SECONDS:-360}
@@ -59,6 +60,13 @@ case "$ITERATIONS:$RNG_SEED:$TIMEOUT:$DURATION:$EXEC_TIMEOUT:$MAX_AUTO_REPLAY_HA
         echo "iterations, seed and timeout must be positive integers" >&2
         exit 2 ;;
 esac
+case "$WORKERS" in
+    ''|*[!0-9]*|0) echo "workers must be a positive integer" >&2; exit 2 ;;
+esac
+if [ "$WORKERS" -gt 16 ] || [ "$WORKERS" -gt "$ITERATIONS" ]; then
+    echo "workers must be at most 16 and no greater than iterations" >&2
+    exit 2
+fi
 if [ "$EXEC_TIMEOUT" -eq 0 ] || [ "$EXEC_TIMEOUT" -gt 3600 ]; then
     echo "FUZZ_EXECUTION_TIMEOUT_SECONDS must be in 1..3600" >&2
     exit 2
@@ -89,10 +97,74 @@ if [ "$COVERAGE_CRYPTO_IMPL:$COVERAGE_TOMCRYPT:$COVERAGE_MPI" != on:on:on ]; the
     exit 2
 fi
 echo "FUZZ_ALGORITHMS=$ALGORITHMS"
-build_runner
-python3 "$SCRIPT_DIR/make_seeds.py"
+if [ "${FUZZ_WORKER_MODE:-0}" != 1 ] && [ "$WORKERS" -gt 1 ]; then
+    exec 9>"$FUZZ_OUTPUT_DIR/.qemu.lock"
+    if ! flock -n 9; then
+        echo "another campaign owns $FUZZ_OUTPUT_DIR" >&2
+        exit 2
+    fi
+    build_runner
+    python3 "$SCRIPT_DIR/make_seeds.py"
+    campaign=$(mktemp -d "$FUZZ_OUTPUT_DIR/campaign-XXXXXXXX")
+    printf 'workers=%s\niterations=%s\nmaster_seed=%s\nalgorithms=%s\nduration_seconds=%s\n' \
+        "$WORKERS" "$ITERATIONS" "$RNG_SEED" "$ALGORITHMS" "$DURATION" > "$campaign/config.txt"
+    printf 'worker_id\tpid\n' > "$campaign/workers.tsv"
+    base_iterations=$((ITERATIONS / WORKERS))
+    extra_iterations=$((ITERATIONS % WORKERS))
+    worker_id=0
+    while [ "$worker_id" -lt "$WORKERS" ]; do
+        worker_iterations=$base_iterations
+        if [ "$worker_id" -lt "$extra_iterations" ]; then
+            worker_iterations=$((worker_iterations + 1))
+        fi
+        worker_seed=$(python3 -c \
+            'import sys; print((int(sys.argv[1]) + int(sys.argv[2])) % (1 << 64))' \
+            "$RNG_SEED" "$worker_id")
+        FUZZ_WORKER_MODE=1 FUZZ_PREPARED=1 FUZZ_WORKERS=1 FUZZ_WORKER_ID="$worker_id" \
+            FUZZ_OUTPUT_DIR="$campaign/worker-$worker_id" \
+            QEMU_WORK_DIR="$campaign/worker-$worker_id/qemu" \
+            "$SCRIPT_DIR/run_qemu_fuzz.sh" "$worker_iterations" "$worker_seed" \
+            "--algorithms=$ALGORITHMS" > "$campaign/worker-$worker_id.log" 2>&1 9>&- &
+        printf '%s\t%s\n' "$worker_id" "$!" >> "$campaign/workers.tsv"
+        worker_id=$((worker_id + 1))
+    done
+    overall_status=0
+    printf 'worker_id\texit_status\tlog\n' > "$campaign/status.tsv"
+    while IFS="$(printf '\t')" read -r worker_id worker_pid; do
+        [ "$worker_id" = worker_id ] && continue
+        worker_status=0
+        wait "$worker_pid" || worker_status=$?
+        [ "$worker_status" -eq 0 ] || overall_status=1
+        printf '%s\t%s\t%s\n' "$worker_id" "$worker_status" \
+            "$campaign/worker-$worker_id.log" >> "$campaign/status.tsv"
+        echo "FUZZ_WORKER_DONE id=$worker_id status=$worker_status" \
+            "log=$campaign/worker-$worker_id.log"
+    done < "$campaign/workers.tsv"
+    total_executions=0
+    worker_id=0
+    while [ "$worker_id" -lt "$WORKERS" ]; do
+        executions=$(tr -d '\r' < "$campaign/worker-$worker_id.log" |
+            sed -n 's/.*FUZZ_DONE .* EXECUTIONS=\([0-9]*\).*/\1/p' | tail -n 1)
+        total_executions=$((total_executions + ${executions:-0}))
+        worker_id=$((worker_id + 1))
+    done
+    echo "FUZZ_CAMPAIGN_DONE WORKERS=$WORKERS EXECUTIONS=$total_executions" \
+        "STATUS=$overall_status ARTIFACTS=$campaign"
+    exit "$overall_status"
+fi
+echo "FUZZ_WORKER_ID=${FUZZ_WORKER_ID:-0}"
+exec 9>"$FUZZ_OUTPUT_DIR/.qemu.lock"
+if ! flock -n 9; then
+    echo "another worker owns $FUZZ_OUTPUT_DIR" >&2
+    exit 2
+fi
+if [ "${FUZZ_PREPARED:-0}" != 1 ]; then
+    build_runner
+    python3 "$SCRIPT_DIR/make_seeds.py"
+fi
 marker=$(mktemp "$FUZZ_OUTPUT_DIR/.started-XXXXXX")
 setup_qemu
+prepare_qemu_workdir
 FUZZ_ITERATIONS="$ITERATIONS"
 FUZZ_RNG_SEED="$RNG_SEED"
 FUZZ_TIMEOUT="$TIMEOUT"
@@ -107,7 +179,7 @@ export FUZZ_DURATION_SECONDS FUZZ_EXECUTION_TIMEOUT_SECONDS
 export FUZZ_ALGORITHMS
 export FUZZ_OUTPUT_DIR FUZZ_GUEST_OUTPUT_DIR FUZZ_NORMAL_LOG FUZZ_PHASE_FILE
 
-cd "$ROOT/out/bin"
+cd "$QEMU_WORK_DIR"
 status=0
 expect "$SCRIPT_DIR/qemu_fuzz.exp" fuzz 9>&- || status=$?
 # Preserve the first VM's logs before a fresh-VM replay replaces serial1.log.
@@ -140,6 +212,7 @@ if [ -f serial1.log ]; then cp serial1.log "$latest/secure.log"; else : > "$late
         "$COVERAGE_CRYPTO_IMPL" "$COVERAGE_TOMCRYPT" "$COVERAGE_MPI"
     printf 'algorithms=%s\n' "$ALGORITHMS"
     printf 'execution_timeout_seconds=%s\n' "$EXEC_TIMEOUT"
+    printf 'worker_id=%s\n' "${FUZZ_WORKER_ID:-0}"
 } > "$latest/build-config.txt"
 MANIFEST_SEED_DIR="$SEED_DIR"
 if [ -d "$latest/selected-seeds" ]; then MANIFEST_SEED_DIR="$latest/selected-seeds"; fi
