@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Jaehun Lee
-//! The FZP2 input program: an 8-byte header followed by operation records.
+//! The FZP3 input program: an 8-byte header followed by operation records.
 //!
 //! The layout is documented in `ta/core_fuzz_ta/README.md`. Parsing is only
 //! as strict as the TA itself, so header magic, version, reserved bytes,
@@ -157,7 +157,7 @@ mod tests {
     fn encode_parse_round_trip_preserves_records_and_trailing_bytes() {
         let program = sample_program();
         let encoded = program.encode().unwrap();
-        assert_eq!(&encoded[..8], b"FZP2\x02\x01\0\0");
+        assert_eq!(&encoded[..8], b"FZP3\x03\x01\0\0");
         assert_eq!(Program::parse(&encoded), Some(program));
     }
 

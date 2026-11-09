@@ -1,13 +1,12 @@
-# OP-TEE S-EL0 core fuzz TA and mini fuzzer
+# OP-TEE S-EL0 core fuzz TA
 
 This TA executes bounded digest, HMAC, transient-object, cipher,
 authenticated-encryption, key-derivation, RNG and asymmetric crypto syscall
 sequences from S-EL0. Its algorithm selectors include SHA-256, SHA-512,
 HMAC-SHA256, AES-CTR, AES-GCM, AES-CCM, HKDF-SHA256, RSA PKCS#1 v1.5
 signatures/encryption, RSA-PSS and RSA-OAEP with SHA-256.
-The single-input Linux client remains available for smoke tests. A separate
-coverage-guided client mutates the same input format, collects OP-TEE core
-feedback and retains useful inputs.
+A Rust LibAFL runner mutates this input format, collects OP-TEE core coverage,
+keeps inputs that expose new coverage, and replays saved inputs.
 
 ## Wire format
 
@@ -15,8 +14,8 @@ All multi-byte fields are little endian. The input is at most 4096 bytes.
 
 | Offset | Size | Meaning |
 | --- | ---: | --- |
-| 0 | 4 | ASCII `FZP2` |
-| 4 | 1 | Version `2` |
+| 0 | 4 | ASCII `FZP3` |
+| 4 | 1 | Version `3` |
 | 5 | 1 | Operation count, 1..64 |
 | 6 | 2 | Reserved, zero |
 
@@ -30,8 +29,10 @@ Each operation has a 7-byte header followed by `data_len` bytes:
 | 3 | 2 | `data_len` |
 | 5 | 2 | Opcode-specific `aux`, described below |
 
-Version 1 inputs used an 8-byte operation header and must be regenerated for
-this layout. State slots and object slots are separate arrays of eight handles.
+Version 1 inputs used an 8-byte operation header. Version 2 used 40-byte
+result records; version 3 uses full-output records and indexed references.
+Regenerate seeds when switching versions. State slots and object slots are
+separate arrays of eight handles.
 Each invocation begins with both arrays empty. The opcodes are:
 
 | Opcode | Name | Action and relevant fields |
@@ -41,28 +42,28 @@ Each invocation begins with both arrays empty. The opcodes are:
 | 3 | UPDATE | Pass `data` to `_utee_hash_update`. |
 | 4 | FINAL | Pass `data` to `_utee_hash_final` with output capacity `aux` (0..64). |
 | 5 | FREE | Free the state in `slot`. The core also closes a key object bound to that state. |
-| 6 | OBJ_ALLOC | Allocate a transient object in `slot`. `selector` 0: HMAC-SHA256 key; 1: generic secret; 2: AES key; 3: HKDF IKM; 4: RSA keypair. `aux` is maximum key bits, with zero meaning 256. |
+| 6 | OBJ_ALLOC | Allocate a transient object in `slot`. `selector` 0: HMAC-SHA256 key; 1: generic secret; 2: AES key; 3: HKDF IKM; 4: RSA keypair; 5: RSA public key. `aux` is maximum key bits, with zero meaning 256. |
 | 7 | OBJ_POPULATE | Populate the object from `data`; `selector` 0 uses `TEE_ATTR_SECRET_VALUE`, 1 uses `TEE_ATTR_HKDF_IKM`. |
 | 8 | OBJ_CLOSE | Close the object in `slot`. |
 | 9 | OBJ_GET_INFO | Retrieve the object's information into the result record. |
 | 10 | OBJ_RESTRICT_USAGE | Intersect object usage with the `aux` bit mask. |
 | 11 | OBJ_RESET | Reset the transient object to its uninitialized state. |
-| 12 | OBJ_GET_ATTR | Read an attribute using capacity `aux` (0..32). `selector` 0 selects `TEE_ATTR_SECRET_VALUE`; other selector values are passed as attribute IDs. |
+| 12 | OBJ_GET_ATTR | Read an attribute using capacity `aux` (0..256). `selector` 0 selects `TEE_ATTR_SECRET_VALUE`; other selector values are passed as attribute IDs. |
 | 13 | OBJ_COPY | Copy the object in source slot `selector` to uninitialized destination `slot`. |
 | 14 | OBJ_GENERATE_KEY | Generate a key in the object at `slot`; `aux` is key bits, with zero meaning 256. |
 | 15 | STATE_COPY | Copy the crypto state in source state slot `selector` to destination state slot `slot`. |
 | 16 | CIPHER_INIT | Initialize a cipher state in `slot` with IV `data`. |
-| 17 | CIPHER_UPDATE | Process `data` with the cipher; `aux` is output capacity (0..256). |
-| 18 | CIPHER_FINAL | Finalize the cipher with `data`; `aux` is output capacity (0..256). |
+| 17 | CIPHER_UPDATE | Process `data` with the cipher; `aux` is output capacity (0..256). With selector `0x80`, `data` is a one-byte index of a previous successful CIPHER_UPDATE or CIPHER_FINAL result to use in full as input. |
+| 18 | CIPHER_FINAL | Finalize the cipher with `data`; `aux` is output capacity (0..256). Selector `0x80` has the same indexed-input meaning as CIPHER_UPDATE. |
 | 19 | DERIVE_KEY | Derive into destination object slot `selector` from state `slot`. `aux` is output key bytes (0..256); `data` is optional HKDF salt. |
 | 20 | RANDOM | Generate `aux` random bytes (0..256). |
 | 21 | AUTHENC_INIT | Initialize authenticated encryption with nonce `data`. `selector` is tag length in bytes (zero means 16, maximum 16); the high and low bytes of `aux` are the declared AAD and payload lengths. |
 | 22 | AUTHENC_UPDATE_AAD | Pass `data` as additional authenticated data. |
 | 23 | AUTHENC_UPDATE_PAYLOAD | Process payload `data`; `aux` is output capacity (0..256). |
 | 24 | AUTHENC_ENC_FINAL | Encrypt final payload `data`; `aux` is output capacity (0..256), and `selector` is tag length in bytes (zero means 16, maximum 16). |
-| 25 | AUTHENC_DEC_FINAL | `data` is the tag followed by final ciphertext. `selector` is tag length in bytes (zero means 16, maximum 16), and `aux` is plaintext capacity (0..256). |
-| 26 | ASYMM_OPERATE | Sign or RSA encrypt/decrypt data; aux is output capacity (0..256). selector 0 uses data; selector 1 uses the previous successful opcode 26 output as input. The full successful output is retained for opcodes 26/27. |
-| 27 | ASYMM_VERIFY | Verify a signature over a digest in `data`. With `selector` 0, `aux` is digest length and the remaining `data` bytes are the signature; with `selector` 1, `data` is the digest and the signature is the last successful opcode 26 output. |
+| 25 | AUTHENC_DEC_FINAL | Normally `data` is the tag followed by final ciphertext. The low seven bits of `selector` are tag length in bytes (zero means 16, maximum 16), and `aux` is plaintext capacity (0..256). With the high selector bit set, `data` is a one-byte index of a successful AUTHENC_ENC_FINAL result; its full ciphertext and tag become the inputs. |
+| 26 | ASYMM_OPERATE | Sign or RSA encrypt/decrypt data; `aux` is output capacity (0..256). Selector 0 uses `data`; selector 1 uses the previous successful opcode 26 output; selector 2 uses the output of the previous successful opcode 26 indexed by the sole byte in `data`. |
+| 27 | ASYMM_VERIFY | Verify a signature over a digest in `data`. With selector 0, `aux` is digest length and the remaining `data` bytes are the signature; with selector 1, `data` is the digest and the signature is the last successful opcode 26 output; with selector 2, `aux` indexes the previous successful opcode 26 result to use as the signature. |
 
 The HMAC success sequence is OBJ_ALLOC (HMAC key) -> OBJ_POPULATE ->
 ALLOC (HMAC-SHA256, referring to that object slot) -> INIT -> UPDATE ->
@@ -78,19 +79,26 @@ for safe execution: operation count, each record's header and payload length,
 slot index, bounded output capacities, and tag and signature field lengths.
 Header magic, version, reserved fields,
 operation-specific unused fields, unknown opcodes, zero operations, and trailing
-bytes are accepted. It returns one 40-byte result per declared operation.
-The result header is `FZR2`, version, count and two reserved bytes. Each result
+bytes are accepted. It returns one 280-byte result per declared operation.
+The result header is `FZR3`, version, count and two reserved bytes. Each result
 contains a 32-bit syscall result, opcode, slot, 16-bit reported output length,
-and up to 32 output bytes. FINAL stores the full digest length but only its
-first 32 bytes; for successful SHA-512, the reported length is 64 and the
-record contains a 32-byte prefix. Other byte-producing operations report
-their full output length and retain at most the first 32 bytes in the result.
-AUTHENC_ENC_FINAL instead stores up to 16 ciphertext bytes followed by up to
-16 tag bytes. OBJ_GET_INFO writes the object information, and OBJ_GET_ATTR
-writes at most 32 attribute bytes. Syscall errors and
+256 output bytes at offsets 8..263, and 16 AEAD tag bytes at offsets 264..279.
+The full output of each bounded byte-producing operation is available to the
+host and to later indexed operations. AUTHENC_ENC_FINAL stores its ciphertext
+in the output region and its tag in the tag region. OBJ_GET_INFO writes the
+object information, and OBJ_GET_ATTR can write up to 256 attribute bytes.
+Indexed references accept only previous successful records of the specified
+opcode and a reported output length no greater than 256. Syscall errors and
 unknown-opcode errors are result values. Record bounds violations return
 `TEE_ERROR_BAD_PARAMETERS` from the TA command. The host client prints
 `TEEC_ERROR_TARGET_DEAD` separately if the TA dies.
+
+## Source layout
+
+ta_entry.c contains the TA entry points. fuzz_run.c validates the copied
+input and manages the result buffer and coverage session. crypto_ops.c
+executes the crypto operations and releases their handles. The FZP3 input and
+FZR3 result formats share the opcode and slot semantics with version 2.
 
 ## Build
 
@@ -103,7 +111,10 @@ make -C ~/optee/build -j4 arm-tf \
   CFG_CORE_FUZZ_COVERAGE=y CFG_CORE_SANITIZE_KADDRESS=y CFG_CORE_ASLR=n
 make -C ~/optee/build -j4 buildroot \
   CFG_CORE_FUZZ_COVERAGE=y CFG_CORE_SANITIZE_KADDRESS=y CFG_CORE_ASLR=n
-make -C ~/optee/optee_test/ta/core_fuzz_ta/host
+make -C ~/optee/optee_test/host/core_fuzz_ta \
+  CROSS_COMPILE=$HOME/optee/out-br/host/bin/aarch64-linux-gnu- \
+  TA_DEV_KIT_DIR=$HOME/optee/optee_os/out/arm/export-ta_arm64 \
+  OPTEE_CLIENT_EXPORT=$HOME/optee/out-br/host/aarch64-buildroot-linux-gnu/sysroot/usr
 ```
 
 Run these build targets in order: TF-A must package the newly built core.
@@ -113,52 +124,45 @@ OP-TEE requires `CFG_CORE_ASLR=n` with this option. The TA sanitizer remains
 off (`CFG_TA_SANITIZE_KADDRESS=n`). Core KASan adds substantial CPU and memory
 cost; use this build for bug finding rather than throughput measurements.
 `CFG_CORE_FUZZ_COVERAGE` defaults to `n` outside this test build. When enabled,
-GCC instruments `core/tee/tee_svc_cryp.c` with `-fsanitize-coverage=trace-pc`.
-The uninstrumented coverage PTA records a 16 KiB byte map for one TA invocation.
-Each ID hashes a core-ASLR-relative call site together with the previous call
-site, so this is PC-derived edge feedback with possible hash collisions. It
-currently measures only the crypto syscall service file, not every core file.
+GCC instruments the crypto syscall front end and helpers in `core/tee`.
+The same build includes the linked `core/crypto` implementations, core
+TomCrypt provider, core MbedTLS MPI and built ARM crypto C wrappers. The
+three implementation coverage options default to `y` when
+`CFG_CORE_FUZZ_COVERAGE=y`, so a campaign can select algorithms at runtime
+without rebuilding OP-TEE. Deep instrumentation costs execution time; tune
+the per-input and QEMU timeouts for RSA-heavy campaigns. The coverage PTA
+remains
+uninstrumented and records a 16 KiB byte map for one TA invocation. Each ID
+hashes a core-ASLR-relative call site together with the previous call site,
+so this is PC-derived edge feedback with possible hash collisions. Unrelated
+core paths are outside this profile. Instrumenting the coverage callback or
+its thread-ID dependency would risk recursive callback calls.
 
-The in-tree TA is built and signed by `optee-os`. Its UUID is
+`ta/Makefile.gmake` builds this TA only when the TA dev kit reports
+`CFG_CORE_FUZZ_COVERAGE=y`, so a default optee_test build skips it. Buildroot
+builds and signs it with the other optee_test TAs. Its UUID is
 `92ea581c-d6ec-449e-9aa6-cf93aa2b44dd`; the file is under
 `~/optee/out-br/target/lib/optee_armtz/`. The client links against the
 Buildroot `libteec` sysroot. The Ubuntu VM itself has no `/dev/tee`: run the
 client in the nested OP-TEE QEMU normal-world guest after the TA and client
 are available there.
 
-For a baseline boot and client smoke test in the nested QEMU guest:
+For a short end-to-end fuzz run in the nested QEMU guest, use the runner script:
 
 ```sh
-make -C ~/optee/build -j4 check \
-  CFG_CORE_FUZZ_COVERAGE=y CFG_CORE_SANITIZE_KADDRESS=y CFG_CORE_ASLR=n \
-  CHECK_TESTS=xtest XTEST_ARGS=1001
-~/optee/optee_test/ta/core_fuzz_ta/host/run_qemu_smoke.sh
+~/optee/optee_test/host/core_fuzz_ta/scripts/run_qemu_fuzz.sh 10 1
 ```
 
-The smoke script regenerates all 21 seed files, then uses virtio 9p to
-share `~/optee` with QEMU. It copies the latest signed TA into the guest and
-checks the original five seed cases, then exits QEMU. The newer crypto/object
-cases enter the fuzzer baseline corpus; the stage-1 smoke script does not
-assert their results. The normal-world and secure-world logs are
-`~/optee/out/bin/fuzz-stage1-normal.log` and
-`~/optee/out/bin/fuzz-stage1-secure.log`.
-
-To confirm the image configuration after building, check
-`~/optee/optee_os/out/arm/conf.mk` for `CFG_CORE_SANITIZE_KADDRESS=y`,
-`CFG_CORE_ASLR=n`, and `CFG_CORE_FUZZ_COVERAGE=y`. The linked `tee.elf` should
-contain both `__asan_load*` and `__sanitizer_cov_trace_pc` symbols. A detected
-core memory violation is printed on the secure console as
-`[ASAN]: access violation, addr: ... size: ...`; the default callback then
-panics the core. `xtest 1001` intentionally triggers several KASan reports
-while testing the sanitizer with a recovery callback. Its `[ASAN]` lines and
-`regression_1001.1 OK` are expected self-test evidence, not fuzz findings.
+The campaign logs and corpus are written below
+`~/optee/optee_test/host/core_fuzz_ta/out/fuzz_out/run-*` by default; set
+`FUZZ_OUTPUT_DIR` to override the output location.
 
 ## Seeds
 
-`make_seeds.py` generates 21 reproducible files in `seeds/`. These generated
-files are ignored by Git. Run
-`python3 ~/optee/optee_test/ta/core_fuzz_ta/make_seeds.py` to create them without
-running the smoke test.
+`make_seeds.py` generates 24 reproducible files in
+`host/core_fuzz_ta/out/seeds/`. These generated files are ignored by Git.
+Run `python3 ~/optee/optee_test/host/core_fuzz_ta/scripts/make_seeds.py` to
+create them without booting QEMU.
 
 - `sha256_abc.bin`: complete SHA-256 state lifecycle; expected digest
   `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`.
@@ -192,176 +196,88 @@ running the smoke test.
   the same `hello` payload with AAD and a 16-byte tag.
 - `rsa_sign_verify.bin`: generate a 2048-bit RSA keypair, copy it before the
   signing state consumes the original, then sign and verify a SHA-256 digest.
+- `rsa_pss_sha256.bin`, `rsaes_pkcs1v15.bin`, and `rsa_oaep_sha256.bin`:
+  separate RSA seeds for algorithm-selected campaigns.
 - `rsa_modes.bin`: generate one RSA keypair, then exercise RSA-PSS-SHA256
   sign/verify, RSAES-PKCS1-v1_5 encrypt/decrypt, and RSA-OAEP-SHA256
   encrypt/decrypt using the previous asymmetric result as the next input.
 
-Run the same file repeatedly with `core_fuzz_ta_ca INPUT_FILE [REPEAT_COUNT]`.
-The client opens a new TA session for every repetition and prints each syscall
-result. A future syzkaller executor can generate this same byte format.
+Inside the QEMU guest, replay one input through the LibAFL runner with
+`host/core_fuzz_ta/out/core_fuzz_ta/core-fuzz-ta-libafl --replay INPUT_FILE
+[REPEAT_COUNT]`. Repetitions share one TA session, as fuzzing does; each
+prints the invocation status, coverage count, and per-operation results.
 
-## Coverage-guided mini fuzzer
+## LibAFL coverage-guided fuzzer
 
-After the build above, run a bounded campaign from the Ubuntu development VM:
-
-```sh
-~/optee/optee_test/ta/core_fuzz_ta/host/run_qemu_fuzz.sh 200 1
-```
-
-The arguments are iteration count, optional deterministic RNG seed, and
-optional HOPPER mode (`on` by default). For a coverage-only comparison, run:
+Build the host tools after building the signed TA and QEMU image
+(`host/core_fuzz_ta/README.md` describes the variables):
 
 ```sh
-~/optee/optee_test/ta/core_fuzz_ta/host/run_qemu_fuzz.sh 200 1 off
+make -C ~/optee/optee_test/host/core_fuzz_ta \
+  CROSS_COMPILE=$HOME/optee/out-br/host/bin/aarch64-linux-gnu- \
+  TA_DEV_KIT_DIR=$HOME/optee/optee_os/out/arm/export-ta_arm64 \
+  OPTEE_CLIENT_EXPORT=$HOME/optee/out-br/host/aarch64-buildroot-linux-gnu/sysroot/usr
 ```
 
-`on` enables target-call coverage, predecessor deletion, learned-parent
-selection, and learned sequence assembly. `off` keeps whole-sequence core
-coverage, ordinary mutation, corpus retention, and crash capture, but does not
-run target probes or use learned relations. The guest fuzzer also accepts
-`--hopper=on|off` directly after its positional arguments. Run logs include
-`FUZZ_HOPPER`, the final mode, and `TA_INVOKES`: attempted host-to-TA
-`TEEC_InvokeCommand` calls after a session opens, including replays and probes.
-The same iteration count is not the same execution budget across modes.
+This builds the Rust LibAFL fuzzer. It provides both coverage-guided fuzzing
+and one-shot input replay, so short campaigns and saved-input reproduction use the
+same TEEC execution path.
 
-For a three-hour mutation campaign, use a high iteration ceiling and a QEMU
-watchdog greater than the requested duration:
+Run a bounded campaign:
 
 ```sh
-FUZZ_DURATION_SECONDS=10800 FUZZ_TIMEOUT=14400 \
-  ~/optee/optee_test/ta/core_fuzz_ta/host/run_qemu_fuzz.sh 100000000 1 on
+~/optee/optee_test/host/core_fuzz_ta/scripts/run_qemu_fuzz.sh 100 1
 ```
 
-The duration starts after all 21 seeds have been validated and any HOPPER
-baseline probes have completed; total VM wall time can therefore exceed three
-hours. `FUZZ_DONE` reports `ELAPSED_SEC` and `STOP_REASON=duration` when the time
-limit ends the mutation loop, or `STOP_REASON=iterations` if the iteration
-ceiling is reached first. The summary also prints per-opcode call and success
-counts as `FUZZ_OPCODE` lines.
-
-The script boots QEMU once, mounts the 9p share, installs the newest signed TA from
-`out-br/target/lib/optee_armtz/`, and runs the guest C fuzzer. The fuzzer opens a
-fresh TA session per input. It begins core coverage inside the TA before the
-crypto/object syscall sequence and ends it after handle cleanup; the old two-memref
-`CMD_RUN` call still works. The optional third output memref carries the map.
-Malformed inputs rejected before the sequence intentionally have no core
-coverage in this version.
-
-For call-dependency learning, `CMD_RUN` also accepts the third output memref
-plus a fourth `VALUE_INPUT` whose `a` field is a zero-based operation index
-(`b` must be zero). In this mode the TA enables coverage only around that
-operation. The ordinary whole-sequence mode and its wire format are unchanged.
-
-The fuzzer loads all `.bin` seeds, mostly mutates operation records while
-preserving their bounds, and sometimes mutates raw bytes to test framing.
-Its structured mutator generates opcodes 1..27, including state, object,
-cipher, authenticated-encryption, KDF, RNG and asymmetric operations.
-It executes each seed twice
-and replays a candidate when it first sees new map bytes. Only bits present
-in both executions are committed. New inputs become future mutation parents.
-The `feedback_criterion` registry in `host/core_fuzz_ta_fuzzer.c` has separate
-`new_features` and `commit` callbacks so later criteria can inspect execution
-results without changing the mutation loop.
-
-The fuzzer also tracks target-operation edges separately for each opcode.
-When a target reaches unseen edges, it replays the input in fresh TA sessions
-and requires identical target coverage and result records. It then deletes
-earlier operations one at a time, replays each deletion twice, and records an
-earlier operation as an effective predecessor if removing it changes the
-target's coverage, result code, or output. Unrelated predecessors are removed
-from the saved witness. At most 16 predecessors are probed per new target path
-to bound the extra executions. These are observed effects for a particular
-input, not universal API preconditions. Target probes consider operation
-indices 1..count-1: state opcodes INIT, UPDATE, FINAL and FREE (2..5), and
-opcodes 6..27. State ALLOC (1) is never a target, and an OBJ_ALLOC in the
-first position is not probed. Whole-sequence core coverage still includes
-all executed operations.
-Each relation records whether the target core map or its 40-byte result record
-changed. A cross-slot coverage-only relation can reflect shared core state or
-handle lookup behavior; it is not labeled as a handle producer requirement.
-
-Reduced witnesses become mutation parents. One quarter of parent selections
-prefer this learned pool; half of those mutations alter payload or FINAL
-capacity while preserving the witness's call sequence. Other mutations still
-explore invalid orderings and handles. Structured mutation can also insert a
-new call before a target using the target's slot as a producer/consumer hint.
-The fuzzer also assembles new programs: it takes the verified predecessor
-prefix from one learned witness and a matching target opcode (including its
-arguments) from a different corpus entry, rebinding the prefix to the target's
-slot. Only witnesses whose remaining predecessors were all deletion-checked
-and use the target slot are assembly templates; cross-slot coverage-only
-observations are not treated as required producers. Assembly currently accepts
-only unkeyed state operations 1..5. Object operations and HMAC state allocation
-depend on separate object and state slots; the one-slot rebinding rule cannot
-safely transplant those dependencies. Their paths can still enter the ordinary
-corpus and the learner can record their observed predecessor effects.
-The assembled program
-runs through the ordinary crash, whole-sequence coverage, and target-coverage
-feedback paths. The summary distinguishes assembly attempts, generated
-programs, target result records and successes, and new edges attributable to
-assembly. The first 32 assembled inputs per run are saved with both corpus
-parent indices for reproduction. This reuses observed sequences without
-turning an input-specific relation into a universal API rule.
-This is inspired by HOPPER's
-target-call coverage and predecessor deletion; it does not implement its
-header-driven API discovery or intra-API constraint inference.
-
-Each run creates `~/optee/out/fuzz/run-XXXXXX/` outside the source tree:
-
-- `corpus/id-*.bin`, `.cov` and `.txt`: new stable coverage, its map and metadata.
-- `target/id-*` (`on` only): stable new coverage for a specific target opcode without a
-  confirmed predecessor relation.
-- `learned/id-*` (`on` only): a reduced target witness; its `.txt` lists predecessors
-  whose deletion changed the target observation, with separate coverage and
-  result-record evidence. The `.cov` contains only target-operation coverage.
-- `assembled/id-*` (`on` only): up to 32 newly assembled programs and metadata naming
-  the target source and learned template source.
-- `crashes/id-*.bin` and `.txt`: `TEEC_ERROR_TARGET_DEAD` inputs. This
-  result indicates TA death and does not by itself prove a core panic.
-- `current.bin` and `current.meta`: the last input and its invocation shape.
-  Each file is individually published by rename before entering the secure world;
-  the two files are not replaced as an atomic pair. `target_index=-1` means
-  whole-sequence coverage; `0..63` selects a target operation.
-- `normal.log`: the Expect transcript containing the Linux console and
-  monitored secure-console tail output; `secure.log`: raw OP-TEE `serial1.log`.
-- `build-config.txt`: the campaign's core KASan and ASLR settings.
-- `crashes/asan-*/input.bin`, `input.meta`, `original-normal.log`,
-  `original-secure.log`, and `status.txt`: a candidate present when the secure
-  console reported `[ASAN]`, including the copied invocation shape.
-- `crashes/asan-*/replay/input.bin`, `input.meta`, `normal.log`, `secure.log`,
-  `phase.txt`, and `status.txt`: one automatic replay in a fresh QEMU VM.
-  `reproduced=yes` means `[ASAN]` was observed during the replayed input;
-  it does not compare the fault address or stack trace with the original.
-
-An `[ASAN]` report is attributed to an input only when the runner is in
-the fuzz phase, the guest has reported its exact `FUZZ_RUN_DIR`, and that run
-has a `current.bin`. Otherwise, including boot/setup reports or an unknown run
-directory, the runner saves console logs and status under
-`~/optee/out/fuzz/asan-unattributed-*/`. It copies no input and starts no
-replay for these reports. To replay a saved input manually in a fresh VM, run:
+The arguments are the maximum mutation iterations and deterministic RNG seed.
+For a timed campaign, the duration starts after seed loading and baseline
+execution; set the QEMU watchdog higher than the requested run time:
 
 ```sh
-~/optee/optee_test/ta/core_fuzz_ta/host/run_qemu_replay.sh INPUT_FILE [OUTPUT_DIR]
+FUZZ_DURATION_SECONDS=21600 FUZZ_TIMEOUT=24000 \
+  ~/optee/optee_test/host/core_fuzz_ta/scripts/run_qemu_fuzz.sh 100000000 1
 ```
 
-If supplied, `OUTPUT_DIR` must be under `~/optee` so the guest can read the
-input through the shared 9p mount. If omitted, the script creates
-`~/optee/out/fuzz/replay-XXXXXX/`. A manual replay writes `input.bin`,
-`normal.log`, `secure.log`, `phase.txt`, and `status.txt` in that directory.
-The replay runner discovers `input.meta` beside an ASan event's `input.bin`, or
-`current.meta` beside a run's `current.bin`, and copies it to the replay folder.
-It invokes `core_fuzz_ta_ca --reproduce INPUT_FILE [TARGET_INDEX]` so the replay
-uses the same three-parameter whole-sequence call or four-parameter target
-probe as the original. `status.txt` records `shape_known` and `target_index`.
-A manually supplied seed without metadata defaults to whole-sequence coverage
-and reports `shape_known=no`.
+The runner boots QEMU once and passes FZP3 command streams to the TA through
+`TEEC_InvokeCommand`; the TA returns FZR3 result records. The custom LibAFL
+mutator performs structured command and argument changes for 80% of mutations
+and raw bit changes for the remaining 20%. Structured changes can edit opcode,
+slot, selector, auxiliary fields and payloads, or add, remove, duplicate and
+reorder commands. `StdMapObserver` reads the 16 KiB whole-invocation
+secure-world coverage map, and `MaxMapFeedback` retains inputs that add map
+features. TA target-death results are saved as crashes. This runner uses one worker.
 
-The outer QEMU runner copies `current.bin` into `crashes/watchdog-*.bin` if a
-kernel panic or campaign timeout is observed. A TA parser error such as
-`TEE_ERROR_BAD_PARAMETERS` is an expected result, not a crash. A core panic
-can halt the VM; restart the runner to begin a new campaign. The first version
-runs one fuzzer at a time because the PTA maintains one active coverage map.
+Each campaign writes to
+`~/optee/optee_test/host/core_fuzz_ta/out/fuzz_out/run-YYYYMMDDHHMMSS/` by
+default; set `FUZZ_OUTPUT_DIR` to override the output location:
 
-The surrounding `build`, `optee_client`, and `optee_test` repositories in this
-VM are still at 4.10.0. Align those repositories before treating this as a
-4.11.0 whole-stack validation.
+- `corpus/`: LibAFL's on-disk corpus of inputs retained for new coverage.
+- `crashes/`: inputs classified as crashes by LibAFL's objective.
+- `current.bin`: the input being executed or most recently executed.
+- `normal.log` and `secure.log`: Linux/Expect and OP-TEE secure-console logs.
+- `build-config.txt`: whether core KASan and core ASLR were enabled.
+- `FUZZ_OPCODE_STEP` lines record each returned operation result; final
+  `FUZZ_OPCODE` lines contain per-opcode totals.
+- `FUZZ_BASELINE_SEEDS`, `FUZZ_PROGRESS` and `FUZZ_DONE` lines summarize the
+  seed/corpus counts, execution rate, coverage-map counts and stop reason.
+
+The runner watches the secure console for `[ASAN]`. When a report occurs during
+fuzzing, it saves the current input and both console logs under
+`crashes/asan-*`, then replays the input in a fresh QEMU instance. A replay is
+reported as reproduced when the secure console emits `[ASAN]` during the input
+phase.
+
+To replay a saved input manually:
+
+```sh
+~/optee/optee_test/host/core_fuzz_ta/scripts/run_qemu_replay.sh INPUT_FILE [OUTPUT_DIR]
+```
+
+`OUTPUT_DIR`, when provided, must be inside `~/optee` so QEMU can read it
+through the 9p share. The replay directory contains the input, normal and
+secure logs, phase, and status. The LibAFL replay mode reports each operation result and the number of
+nonzero coverage-map bytes.
+
+The TA's `CMD_RUN` accepts one input memref, one result memref, and one
+coverage-map output memref. It starts coverage before executing the operation
+sequence and returns the map after sequence cleanup. The fuzzer and replay mode use this same whole-input interface.

@@ -3,8 +3,8 @@
 //! Portable pieces of the `core_fuzz_ta` LibAFL runner.
 //!
 //! This library holds everything that does not need libteec or a TEE, so it
-//! can be tested on any development host: the FZP2 input format
-//! ([`program`]), the structure-aware LibAFL mutator ([`mutator`]), the FZR2
+//! can be tested on any development host: the FZP3 input format
+//! ([`program`]), the structure-aware LibAFL mutator ([`mutator`]), the FZR3
 //! response decoder ([`response`]), the command line ([`cli`]), campaign
 //! statistics ([`stats`]) and output files ([`output`]). The QEMU-guest
 //! binary in `src/main.rs` adds the TEEC client and the campaign loops.
@@ -17,6 +17,8 @@
 pub mod algorithms;
 pub mod cli;
 mod crypto_mutator;
+pub mod invariant_oracle;
+pub mod invariant_spec;
 pub mod mutator;
 pub mod output;
 pub mod program;

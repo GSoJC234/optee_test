@@ -87,7 +87,7 @@ impl AlgorithmSet {
             1 => self.has(2) || self.has(5),
             2 => self.has(3) || self.has(4) || self.has(8),
             3 => self.has(5),
-            4 => (6..=10).any(|index| self.has(index)),
+            4 | 5 => (6..=10).any(|index| self.has(index)),
             _ => true, // Invalid selectors only exercise parameter rejection.
         }
     }

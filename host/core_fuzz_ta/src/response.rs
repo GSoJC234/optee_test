@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Jaehun Lee
-//! Decoder for the TA's FZR2 response and per-opcode statistics.
+//! Decoder for the TA's FZR3 response and per-opcode statistics.
 
 use std::{error::Error, fmt, iter::FusedIterator, slice::ChunksExact};
 
@@ -39,8 +39,8 @@ pub struct Step<'a> {
     /// Slot byte copied from the input record.
     pub slot: u8,
     /// Output length reported by the operation. It may exceed
-    /// `RESULT_DATA_SIZE` (e.g. a SHA-512 digest or a short-buffer
-    /// requirement); only the prefix is stored.
+    /// `RESULT_DATA_SIZE` for a short-buffer requirement; only the first
+    /// `RESULT_DATA_SIZE` bytes fit in the record.
     pub reported_len: u16,
     payload: &'a [u8],
 }
@@ -66,9 +66,12 @@ impl<'a> Step<'a> {
         self.status == TEE_SUCCESS
     }
 
-    /// The stored output prefix: at most `RESULT_DATA_SIZE` bytes.
+    /// The stored operation output: at most `RESULT_DATA_SIZE` bytes.
     #[must_use]
     pub fn data(&self) -> &'a [u8] {
+        if !self.succeeded() {
+            return &[];
+        }
         let stored = usize::from(self.reported_len).min(RESULT_DATA_SIZE);
         &self.payload[..stored]
     }
@@ -95,7 +98,7 @@ impl<'a> Iterator for Steps<'a> {
 impl ExactSizeIterator for Steps<'_> {}
 impl FusedIterator for Steps<'_> {}
 
-/// Validates the FZR2 header and returns the result records.
+/// Validates the FZR3 header and returns the result records.
 ///
 /// # Errors
 ///
@@ -190,7 +193,7 @@ mod tests {
             record[4] = *opcode;
             record[6..8].copy_from_slice(&length.to_le_bytes());
             for (offset, byte) in record[RESULT_HEADER_SIZE..].iter_mut().enumerate() {
-                *byte = u8::try_from(offset).unwrap();
+                *byte = u8::try_from(offset % RESULT_DATA_SIZE).unwrap();
             }
         }
         bytes
@@ -244,12 +247,20 @@ mod tests {
     }
 
     #[test]
-    fn long_outputs_report_the_full_length_and_keep_a_prefix() {
+    fn long_outputs_are_preserved_in_full() {
         let bytes = response(&[(TEE_SUCCESS, OP_FINAL, 64), (TEE_SUCCESS, OP_RANDOM, 5)]);
         let steps: Vec<_> = parse(&bytes).unwrap().collect();
         assert_eq!(steps[0].reported_len, 64);
-        assert_eq!(steps[0].data().len(), RESULT_DATA_SIZE);
+        assert_eq!(steps[0].data().len(), 64);
         assert_eq!(steps[1].data(), [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn failed_result_does_not_expose_short_buffer_length_as_data() {
+        let bytes = response(&[(0xffff_0010, OP_FINAL, 256)]);
+        let step = parse(&bytes).unwrap().next().unwrap();
+        assert_eq!(step.reported_len, 256);
+        assert!(step.data().is_empty());
     }
 
     #[test]

@@ -6,6 +6,9 @@ use std::{error::Error, fmt::Write as _, fs};
 
 use core_fuzz_ta_libafl::{
     cli::ReplayConfig,
+    invariant_oracle,
+    invariant_spec::InvariantSpec,
+    program::Program,
     protocol::{MAX_INPUT_SIZE, MAX_OUTPUT_SIZE, OP_FINAL},
     response::{self, OpcodeStats, Steps},
 };
@@ -39,6 +42,7 @@ fn run_once(
     input: &[u8],
     run_index: u64,
     stats: &mut OpcodeStats,
+    invariants: &InvariantSpec,
 ) -> Result<bool, Box<dyn Error>> {
     let mut response = [0u8; MAX_OUTPUT_SIZE];
     let invocation = teec.run(input, &mut response, coverage);
@@ -71,6 +75,17 @@ fn run_once(
     );
     let steps = response::parse(response)?;
     print_steps(steps.clone());
+    if let Some(program) = Program::parse(input) {
+        let collected: Vec<_> = steps.clone().collect();
+        for check in invariant_oracle::evaluate_checks(invariants, &program, &collected) {
+            println!(
+                "FUZZ_INVARIANT_CHECK id={} status={} steps={:?}",
+                check.invariant,
+                if check.passed { "PASS" } else { "VIOLATION" },
+                check.steps
+            );
+        }
+    }
     print_opcode_steps(steps, stats);
     Ok(true)
 }
@@ -89,11 +104,19 @@ pub(crate) fn run(config: &ReplayConfig) -> Result<(), Box<dyn Error>> {
     );
 
     let teec = TeecContext::new()?;
+    let invariants = InvariantSpec::parse(include_str!("../../invariants.toml"))?;
     let mut coverage = CoverageMap::new();
     let mut stats = OpcodeStats::default();
     let mut status = 0;
     for run_index in 1..=config.repeats {
-        if !run_once(&teec, &mut coverage, &input, run_index, &mut stats)? {
+        if !run_once(
+            &teec,
+            &mut coverage,
+            &input,
+            run_index,
+            &mut stats,
+            &invariants,
+        )? {
             status = FAILED_STATUS;
         }
     }

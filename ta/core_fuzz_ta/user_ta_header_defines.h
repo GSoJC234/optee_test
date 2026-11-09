@@ -10,7 +10,7 @@
 #define TA_UUID CORE_FUZZ_TA_UUID
 #define TA_FLAGS 0
 #define TA_STACK_SIZE (16 * 1024)
-#define TA_DATA_SIZE (32 * 1024)
+#define TA_DATA_SIZE (64 * 1024)
 #define TA_VERSION "0.1"
 #define TA_DESCRIPTION "S-EL0 OP-TEE core fuzz TA"
 

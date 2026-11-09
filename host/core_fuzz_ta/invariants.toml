@@ -1,0 +1,81 @@
+# Each flow is an ordered subsequence of one FZP3 execution. Unrelated calls
+# may occur between its steps. A rule is checked only when the trace supplies
+# valid key/object bindings and the earlier steps needed for its assertion
+# succeeded. The runner writes counterexamples under run-*/violations/.
+
+[[invariants]]
+id = "sign_verify"
+inputType = "digest"
+flow = ["sign", "verify"]
+bind = { "sign.key" = "k", "verify.key" = "k" }
+expect = "success"
+
+[[invariants]]
+id = "encrypt_decrypt"
+inputType = "plain"
+flow = ["encrypt", "decrypt"]
+bind = { "encrypt.key" = "k", "decrypt.key" = "k" }
+expect = "output == input"
+
+[[invariants]]
+id = "aead_roundtrip"
+inputType = "plain"
+flow = ["auth_encrypt", "auth_decrypt"]
+bind = { "auth_encrypt.key" = "k", "auth_decrypt.key" = "k" }
+expect = "output == input"
+
+[[invariants]]
+id = "copy_preserves_secret"
+inputType = "secret"
+flow = ["copy", "get_attr"]
+bind = { "copy.source" = "k", "copy.destination" = "k2", "get_attr.object" = "k2" }
+expect = "output == input"
+
+[[invariants]]
+id = "copy_is_independent"
+inputType = "secret"
+flow = ["copy", "reset", "get_attr"]
+bind = { "copy.source" = "k", "copy.destination" = "k2", "reset.object" = "k", "get_attr.object" = "k2" }
+expect = "output == input"
+
+[[invariants]]
+id = "copied_key_roundtrip"
+inputType = "plain"
+flow = ["copy", "encrypt", "decrypt"]
+bind = { "copy.source" = "k", "copy.destination" = "k2", "encrypt.key" = "k2", "decrypt.key" = "k" }
+expect = "output == input"
+
+[[invariants]]
+id = "copied_public_key_verify"
+inputType = "digest"
+flow = ["copy", "sign", "verify"]
+bind = { "copy.source" = "k", "copy.destination" = "p", "copy.destination_type" = "public_key", "sign.key" = "k", "verify.key" = "p" }
+expect = "success"
+
+[[invariants]]
+id = "generated_key_sign_verify"
+inputType = "digest"
+flow = ["generate", "sign", "verify"]
+bind = { "generate.key" = "k", "sign.key" = "k", "verify.key" = "k" }
+expect = "success"
+
+[[invariants]]
+id = "reset_uninitializes"
+inputType = "secret"
+flow = ["populate", "reset", "get_info"]
+bind = { "populate.object" = "k", "reset.object" = "k", "get_info.object" = "k" }
+expect = "output.initialized == false"
+
+[[invariants]]
+id = "restrict_usage"
+inputType = "usage_mask"
+flow = ["allocate", "restrict_usage", "get_info"]
+bind = { "allocate.object" = "k", "restrict_usage.object" = "k", "get_info.object" = "k" }
+expect = "output.usage == input"
+
+[[invariants]]
+id = "copy_preserves_usage"
+inputType = "usage_mask"
+flow = ["allocate", "restrict_usage", "copy", "get_info"]
+bind = { "allocate.object" = "k", "restrict_usage.object" = "k", "copy.source" = "k", "copy.destination" = "k2", "get_info.object" = "k2" }
+expect = "output.usage == input"

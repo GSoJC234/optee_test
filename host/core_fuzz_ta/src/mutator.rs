@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Jaehun Lee
-//! Structure-aware LibAFL mutator for FZP2 programs.
+//! Structure-aware LibAFL mutator for FZP3 programs.
 //!
 //! Four out of five mutations decode the input as a [`Program`] and edit one
 //! field or record using values that are meaningful to the TA. The rest, and
@@ -22,8 +22,9 @@ use crate::{
     crypto_mutator,
     program::{Operation, Program},
     protocol::{
-        MAX_INPUT_SIZE, MAX_OPCODE, MAX_OPERATIONS, OP_HEADER_SIZE, OP_RANDOM, OPCODE_COUNT,
-        SLOT_COUNT,
+        MAX_INPUT_SIZE, MAX_OPCODE, MAX_OPERATIONS, OP_ASYMM_OPERATE, OP_ASYMM_VERIFY,
+        OP_AUTHENC_DEC_FINAL, OP_CIPHER_FINAL, OP_CIPHER_UPDATE, OP_HEADER_SIZE, OP_RANDOM,
+        OPCODE_COUNT, SLOT_COUNT,
     },
 };
 
@@ -34,7 +35,7 @@ const STRUCTURED_ACTIONS: usize = 9;
 /// One quarter of length edits use the syscall-specific boundary table.
 const BOUNDARY_LENGTH_DENOMINATOR: usize = 4;
 
-/// LibAFL mutator that edits FZP2 programs field by field.
+/// LibAFL mutator that edits FZP3 programs field by field.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CoreFuzzProgramMutator {
     algorithms: AlgorithmSet,
@@ -280,6 +281,33 @@ where
     true
 }
 
+fn remap_references(program: &mut Program, old_to_new: impl Fn(usize) -> Option<usize>) {
+    for (consumer, op) in program.operations.iter_mut().enumerate() {
+        let index = match op.opcode {
+            OP_CIPHER_UPDATE | OP_CIPHER_FINAL if op.selector == 0x80 => {
+                op.data.first().copied().map(usize::from)
+            }
+            OP_AUTHENC_DEC_FINAL if op.selector & 0x80 != 0 => {
+                op.data.first().copied().map(usize::from)
+            }
+            OP_ASYMM_OPERATE if op.selector == 2 => op.data.first().copied().map(usize::from),
+            OP_ASYMM_VERIFY if op.selector == 2 => Some(usize::from(op.aux)),
+            _ => None,
+        };
+        let Some(old_index) = index else {
+            continue;
+        };
+        let mapped = old_to_new(old_index)
+            .filter(|&source| source < consumer)
+            .and_then(|source| u8::try_from(source).ok());
+        match op.opcode {
+            OP_ASYMM_VERIFY => op.aux = mapped.map_or(u16::MAX, u16::from),
+            _ if !op.data.is_empty() => op.data[0] = mapped.unwrap_or(u8::MAX),
+            _ => {}
+        }
+    }
+}
+
 fn duplicate_operation<F>(program: &mut Program, choose: &mut F) -> bool
 where
     F: FnMut(usize) -> usize,
@@ -296,6 +324,9 @@ where
     }
     let position = choose(program.operations.len() + 1);
     program.operations.insert(position, operation);
+    remap_references(program, |old| {
+        Some(if old < position { old } else { old + 1 })
+    });
     true
 }
 
@@ -308,6 +339,13 @@ where
     }
     let index = choose(program.operations.len());
     program.operations.remove(index);
+    remap_references(program, |old| {
+        if old == index {
+            None
+        } else {
+            Some(if old < index { old } else { old - 1 })
+        }
+    });
     true
 }
 
@@ -320,6 +358,13 @@ where
     }
     let index = choose(program.operations.len() - 1);
     program.operations.swap(index, index + 1);
+    remap_references(program, |old| {
+        Some(match old {
+            old if old == index => index + 1,
+            old if old == index + 1 => index,
+            old => old,
+        })
+    });
     true
 }
 
@@ -399,5 +444,52 @@ mod tests {
                 assert!((1..=MAX_OPCODE).contains(&opcode));
             }
         }
+    }
+
+    #[test]
+    fn structural_mutations_keep_indexed_result_references() {
+        let mut program = sample_program();
+        program.operations = vec![
+            Operation {
+                opcode: OP_CIPHER_FINAL,
+                slot: 0,
+                selector: 0,
+                aux: 5,
+                data: b"hello".to_vec(),
+            },
+            Operation {
+                opcode: OP_RANDOM,
+                slot: 7,
+                selector: 0,
+                aux: 1,
+                data: Vec::new(),
+            },
+            Operation {
+                opcode: OP_CIPHER_FINAL,
+                slot: 1,
+                selector: 0x80,
+                aux: 5,
+                data: vec![0],
+            },
+            Operation {
+                opcode: OP_ASYMM_VERIFY,
+                slot: 2,
+                selector: 2,
+                aux: 0,
+                data: b"digest".to_vec(),
+            },
+        ];
+        let mut zero = |_| 0;
+        assert!(duplicate_operation(&mut program, &mut zero));
+        assert_eq!(program.operations[3].data, [1]);
+        assert_eq!(program.operations[4].aux, 1);
+
+        assert!(delete_operation(&mut program, &mut zero));
+        assert_eq!(program.operations[2].data, [0]);
+        assert_eq!(program.operations[3].aux, 0);
+
+        assert!(swap_adjacent_operations(&mut program, &mut zero));
+        assert_eq!(program.operations[2].data, [1]);
+        assert_eq!(program.operations[3].aux, 1);
     }
 }

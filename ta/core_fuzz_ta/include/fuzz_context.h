@@ -16,6 +16,8 @@ struct fuzz_context {
 	/* Full asymmetric result for a later VERIFY operation. */
 	uint8_t asymm_result[CORE_FUZZ_TA_TEMP_OUTPUT_SIZE];
 	uint16_t asymm_result_len;
+	/* Tag lengths for successful AUTHENC_ENC_FINAL result records. */
+	uint8_t tag_lens[CORE_FUZZ_TA_MAX_OPS];
 };
 
 static inline void fuzz_context_init(struct fuzz_context *ctx)

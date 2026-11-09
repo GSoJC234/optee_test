@@ -189,7 +189,9 @@ TEE_Result fuzz_run(uint32_t param_types, TEE_Param params[4])
 
 		record[4] = op.opcode;
 		record[5] = op.slot;
-		step = crypto_execute(&ctx, &op, record);
+		step = crypto_execute(&ctx, &op, record,
+				      output + CORE_FUZZ_TA_OUTPUT_HEADER_SIZE,
+				      i);
 		write_u32(record, step);
 		offset += CORE_FUZZ_TA_OP_HEADER_SIZE + op.data_len;
 	}

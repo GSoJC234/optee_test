@@ -31,6 +31,8 @@ path = "src/bin/broker.rs"
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 libafl = { version = "=0.15.2", default-features = false, features = ["std", "derive", "rand_trait", "tcp_manager"] }
 libafl_bolts = { version = "=0.15.2", default-features = false, features = ["std", "rand_trait", "serdeany_autoreg"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [build-dependencies]
 cc = "1.2"

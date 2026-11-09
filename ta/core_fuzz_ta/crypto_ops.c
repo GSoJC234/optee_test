@@ -11,6 +11,35 @@
 #include <stddef.h>
 #include <stdint.h>
 
+static uint16_t read_u16(const uint8_t *p)
+{
+	return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t read_u32(const uint8_t *p)
+{
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+		((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Result records double as the invocation's full-output cache. */
+static const uint8_t *prior_result(const uint8_t *records,
+				   size_t prior_count, size_t index,
+				   uint8_t expected_op,
+				   uint8_t alternate_op)
+{
+	const uint8_t *record = NULL;
+
+	if (index >= prior_count)
+		return NULL;
+	record = records + index * CORE_FUZZ_TA_RESULT_SIZE;
+	if (read_u32(record) != TEE_SUCCESS ||
+	    (record[4] != expected_op && record[4] != alternate_op) ||
+	    read_u16(record + 6) > CORE_FUZZ_TA_RESULT_DATA_SIZE)
+		return NULL;
+	return record;
+}
+
 static void write_u16(uint8_t *p, uint16_t value)
 {
 	p[0] = (uint8_t)value;
@@ -31,7 +60,8 @@ static void copy_result_prefix(uint8_t *record, const uint8_t *value,
 }
 
 TEE_Result crypto_execute(struct fuzz_context *ctx,
-			  const struct fuzz_op *op, uint8_t *record)
+			  const struct fuzz_op *op, uint8_t *record,
+			  const uint8_t *prior_records, size_t prior_count)
 {
 	const uint8_t opcode = op->opcode;
 	const uint8_t slot = op->slot;
@@ -156,7 +186,7 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 		if (digest_len > UINT16_MAX)
 			digest_len = UINT16_MAX;
 		write_result_length(record, digest_len);
-		if (step == TEE_SUCCESS)
+		if (step == TEE_SUCCESS && digest_len <= sizeof(digest))
 			copy_result_prefix(record, digest, digest_len);
 		break;
 	}
@@ -189,6 +219,8 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 			type = TEE_TYPE_HKDF_IKM;
 		else if (selector == 4)
 			type = TEE_TYPE_RSA_KEYPAIR;
+		else if (selector == 5)
+			type = TEE_TYPE_RSA_PUBLIC_KEY;
 		else if (selector) {
 			step = TEE_ERROR_BAD_PARAMETERS;
 			break;
@@ -245,7 +277,7 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 		step = _utee_cryp_obj_reset(ctx->crypto_object_handles[slot]);
 		break;
 	case CORE_FUZZ_TA_OBJ_GET_ATTR: {
-		uint8_t value[32] = { 0 };
+		uint8_t value[CORE_FUZZ_TA_RESULT_DATA_SIZE] = { 0 };
 		uint64_t value_len = aux;
 		uint32_t attr_id = selector ? selector :
 			TEE_ATTR_SECRET_VALUE;
@@ -295,21 +327,40 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 	case CORE_FUZZ_TA_CIPHER_FINAL: {
 		uint8_t value[CORE_FUZZ_TA_TEMP_OUTPUT_SIZE] = { 0 };
 		uint64_t value_len = aux;
+		const uint8_t *src_data = data;
+		size_t src_len = data_len;
 
 		if (aux > sizeof(value)) {
 			step = TEE_ERROR_BAD_PARAMETERS;
 			break;
 		}
+		if (selector == 0x80) {
+			const uint8_t *src = NULL;
+
+			if (data_len != 1) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			src = prior_result(prior_records, prior_count, data[0],
+					   CORE_FUZZ_TA_CIPHER_UPDATE,
+					   CORE_FUZZ_TA_CIPHER_FINAL);
+			if (!src) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			src_data = src + 8;
+			src_len = read_u16(src + 6);
+		}
 		if (opcode == CORE_FUZZ_TA_CIPHER_UPDATE)
 			step = _utee_cipher_update(
-				ctx->crypto_state_handles[slot], data,
-				data_len, value, &value_len);
+				ctx->crypto_state_handles[slot], src_data,
+				src_len, value, &value_len);
 		else
 			step = _utee_cipher_final(
-				ctx->crypto_state_handles[slot], data,
-				data_len, value, &value_len);
+				ctx->crypto_state_handles[slot], src_data,
+				src_len, value, &value_len);
 		write_result_length(record, value_len);
-		if (step == TEE_SUCCESS)
+		if (step == TEE_SUCCESS && value_len <= sizeof(value))
 			copy_result_prefix(record, value, value_len);
 		break;
 	}
@@ -372,7 +423,7 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 			ctx->crypto_state_handles[slot], data, data_len,
 			value, &value_len);
 		write_result_length(record, value_len);
-		if (step == TEE_SUCCESS)
+		if (step == TEE_SUCCESS && value_len <= sizeof(value))
 			copy_result_prefix(record, value, value_len);
 		break;
 	}
@@ -390,30 +441,60 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 			ctx->crypto_state_handles[slot], data, data_len,
 			value, &value_len, tag, &tag_len);
 		write_result_length(record, value_len);
-		if (step == TEE_SUCCESS) {
-			TEE_MemMove(record + 8, value,
-				    value_len > 16 ? 16 : value_len);
-			TEE_MemMove(record + 24, tag,
-				    tag_len > 16 ? 16 : tag_len);
+		if (step == TEE_SUCCESS && value_len <= sizeof(value) &&
+		    tag_len <= sizeof(tag)) {
+			copy_result_prefix(record, value, value_len);
+			TEE_MemMove(record + 8 + CORE_FUZZ_TA_RESULT_DATA_SIZE,
+				    tag, tag_len);
+			ctx->tag_lens[prior_count] = tag_len;
 		}
 		break;
 	}
 	case CORE_FUZZ_TA_AUTHENC_DEC_FINAL: {
 		uint8_t value[CORE_FUZZ_TA_TEMP_OUTPUT_SIZE] = { 0 };
 		uint64_t value_len = aux;
-		size_t tag_len = selector ? selector : 16;
+		size_t tag_len = selector & 0x7f;
+		const uint8_t *tag = data;
+		const uint8_t *src_data = NULL;
+		size_t src_len = 0;
 
-		if (aux > sizeof(value) || tag_len > 16 ||
-		    data_len < tag_len) {
+		if (!tag_len)
+			tag_len = 16;
+
+		if (aux > sizeof(value) || tag_len > 16) {
 			step = TEE_ERROR_BAD_PARAMETERS;
 			break;
 		}
+		if (selector & 0x80) {
+			const uint8_t *src = NULL;
+
+			if (data_len != 1) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			src = prior_result(prior_records, prior_count, data[0],
+					   CORE_FUZZ_TA_AUTHENC_ENC_FINAL,
+					   CORE_FUZZ_TA_AUTHENC_ENC_FINAL);
+			if (!src || ctx->tag_lens[data[0]] != tag_len) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			tag = src + 8 + CORE_FUZZ_TA_RESULT_DATA_SIZE;
+			src_data = src + 8;
+			src_len = read_u16(src + 6);
+		} else {
+			if (data_len < tag_len) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			src_data = data + tag_len;
+			src_len = data_len - tag_len;
+		}
 		step = _utee_authenc_dec_final(
-			ctx->crypto_state_handles[slot], data + tag_len,
-			data_len - tag_len, value, &value_len,
-			data, tag_len);
+			ctx->crypto_state_handles[slot], src_data,
+			src_len, value, &value_len, tag, tag_len);
 		write_result_length(record, value_len);
-		if (step == TEE_SUCCESS)
+		if (step == TEE_SUCCESS && value_len <= sizeof(value))
 			copy_result_prefix(record, value, value_len);
 		break;
 	}
@@ -423,7 +504,7 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 		size_t src_len = data_len;
 		uint64_t value_len = aux;
 
-		if (selector > 1 || aux > sizeof(value)) {
+		if (selector > 2 || aux > sizeof(value)) {
 			step = TEE_ERROR_BAD_PARAMETERS;
 			break;
 		}
@@ -434,15 +515,29 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 			}
 			src_data = ctx->asymm_result;
 			src_len = ctx->asymm_result_len;
+		} else if (selector == 2) {
+			const uint8_t *src = NULL;
+
+			if (data_len != 1) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			src = prior_result(prior_records, prior_count, data[0],
+					   CORE_FUZZ_TA_ASYMM_OPERATE,
+					   CORE_FUZZ_TA_ASYMM_OPERATE);
+			if (!src) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			src_data = src + 8;
+			src_len = read_u16(src + 6);
 		}
 		step = _utee_asymm_operate(ctx->crypto_state_handles[slot],
 			NULL, 0, src_data, src_len, value, &value_len);
 		write_result_length(record, value_len);
-		if (step == TEE_SUCCESS) {
+		if (step == TEE_SUCCESS && value_len <= sizeof(value)) {
 			copy_result_prefix(record, value, value_len);
-			ctx->asymm_result_len =
-				value_len > sizeof(ctx->asymm_result) ?
-				sizeof(ctx->asymm_result) : value_len;
+			ctx->asymm_result_len = value_len;
 			TEE_MemMove(ctx->asymm_result, value,
 				    ctx->asymm_result_len);
 		}
@@ -456,6 +551,18 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 		if (selector == 1) {
 			signature = ctx->asymm_result;
 			signature_len = ctx->asymm_result_len;
+		} else if (selector == 2) {
+			const uint8_t *src = prior_result(prior_records,
+				prior_count, aux,
+				CORE_FUZZ_TA_ASYMM_OPERATE,
+				CORE_FUZZ_TA_ASYMM_OPERATE);
+
+			if (!src) {
+				step = TEE_ERROR_BAD_PARAMETERS;
+				break;
+			}
+			signature = src + 8;
+			signature_len = read_u16(src + 6);
 		} else if (selector == 0 && aux <= data_len) {
 			digest_len = aux;
 			signature = data + aux;

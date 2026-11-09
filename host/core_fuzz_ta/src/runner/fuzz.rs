@@ -4,8 +4,11 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     error::Error,
-    fs, io,
+    fs,
+    hash::{Hash, Hasher},
+    io,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -14,8 +17,11 @@ use std::{
 use core_fuzz_ta_libafl::{
     algorithms::AlgorithmSet,
     cli::FuzzConfig,
+    invariant_oracle,
+    invariant_spec::InvariantSpec,
     mutator::CoreFuzzProgramMutator,
     output,
+    program::Program,
     protocol::MAX_OUTPUT_SIZE,
     response::{self, OpcodeStats},
     stats::CoverageStats,
@@ -44,6 +50,8 @@ use super::{coverage::CoverageMap, print_opcode_steps, print_opcode_totals, teec
 const LIBAFL_VERSION: &str = "0.15.2";
 /// Iterations between `FUZZ_PROGRESS` lines.
 const PROGRESS_INTERVAL: u64 = 25;
+/// Keep semantic findings bounded during long campaigns.
+const MAX_SAVED_PER_INVARIANT: usize = 64;
 
 type FuzzState = StdState<OnDiskCorpus<BytesInput>, BytesInput, StdRand, OnDiskCorpus<BytesInput>>;
 
@@ -53,6 +61,8 @@ struct Totals {
     opcodes: OpcodeStats,
     invoke_errors: u64,
     rejected_inputs: u64,
+    semantic_violations: u64,
+    violation_inputs: HashMap<String, HashSet<u64>>,
 }
 
 /// Directories of one campaign below the output root.
@@ -72,8 +82,56 @@ impl RunArtifacts {
         };
         fs::create_dir(&artifacts.corpus)?;
         fs::create_dir(&artifacts.hangs)?;
+        fs::create_dir(artifacts.root.join("violations"))?;
         Ok(artifacts)
     }
+}
+
+fn record_violations(
+    run_dir: &Path,
+    input: &[u8],
+    spec: &InvariantSpec,
+    steps: &[response::Step<'_>],
+    totals: &mut Totals,
+) -> io::Result<()> {
+    let Some(program) = Program::parse(input) else {
+        return Ok(());
+    };
+    for check in invariant_oracle::evaluate_checks(spec, &program, steps) {
+        if check.passed {
+            continue;
+        }
+        let mut hash = DefaultHasher::new();
+        input.hash(&mut hash);
+        let seen = totals
+            .violation_inputs
+            .entry(check.invariant.clone())
+            .or_default();
+        if seen.len() >= MAX_SAVED_PER_INVARIANT || !seen.insert(hash.finish()) {
+            continue;
+        }
+        totals.semantic_violations += 1;
+        let stem = format!(
+            "violation-{:06}-{}",
+            totals.semantic_violations, check.invariant
+        );
+        let dir = run_dir.join("violations");
+        fs::write(dir.join(format!("{stem}.bin")), input)?;
+        fs::write(
+            dir.join(format!("{stem}.txt")),
+            format!(
+                "invariant={}\nsteps={:?}\nexpected={}\n",
+                check.invariant, check.steps, check.expected
+            ),
+        )?;
+        println!(
+            "FUZZ_INVARIANT_VIOLATION id={} steps={:?} artifact={}",
+            check.invariant,
+            check.steps,
+            dir.join(format!("{stem}.bin")).display()
+        );
+    }
+    Ok(())
 }
 
 /// Executes one input: records it, invokes the TA and updates `totals`.
@@ -83,6 +141,7 @@ fn execute(
     run_dir: &Path,
     input: &[u8],
     algorithms: AlgorithmSet,
+    invariants: &InvariantSpec,
     totals: &mut Totals,
     save_error: &Cell<Option<io::Error>>,
 ) -> ExitKind {
@@ -102,7 +161,12 @@ fn execute(
     let invocation = teec.run(input, &mut response, coverage);
     if invocation.succeeded() {
         if let Some(Ok(steps)) = response.get(..invocation.response_len).map(response::parse) {
+            let collected: Vec<_> = steps.clone().collect();
             print_opcode_steps(steps, &mut totals.opcodes);
+            if let Err(error) = record_violations(run_dir, input, invariants, &collected, totals) {
+                let first = save_error.take().unwrap_or(error);
+                save_error.set(Some(first));
+            }
         }
     }
 
@@ -160,13 +224,15 @@ fn report_completion(
     println!(
         "FUZZ_DONE STATUS={status} ENGINE=libafl WORKERS=1 ITERATIONS={iterations} \
          EXECUTIONS={executions} EXEC_PER_SEC={:.1} CORPUS={corpus_count} SECURE_MAP_BYTES={} \
-         INVALID_COVERAGE={} TARGET_DEAD={} INVOKE_ERRORS={} REJECTED_INPUTS={}",
+         INVALID_COVERAGE={} TARGET_DEAD={} INVOKE_ERRORS={} REJECTED_INPUTS={} \
+         SEMANTIC_VIOLATIONS={}",
         exec_per_sec(executions, elapsed),
         totals.coverage.seen_map_bytes(),
         totals.coverage.invalid_runs(),
         totals.coverage.target_dead_runs(),
         totals.invoke_errors,
         totals.rejected_inputs,
+        totals.semantic_violations,
     );
 }
 
@@ -196,6 +262,7 @@ where
         + SendExiting,
 {
     let artifacts = RunArtifacts::create(&config.output_root)?;
+    let invariants = InvariantSpec::parse(include_str!("../../invariants.toml"))?;
     let selected_seed_dir = artifacts.root.join("selected-seeds");
     fs::create_dir(&selected_seed_dir)?;
     let mut seed_count = 0;
@@ -257,6 +324,8 @@ where
         opcodes: OpcodeStats::default(),
         invoke_errors: 0,
         rejected_inputs: 0,
+        semantic_violations: 0,
+        violation_inputs: HashMap::new(),
     });
     let save_error = Cell::new(None);
     let check_save_error = || match save_error.take() {
@@ -271,6 +340,7 @@ where
             &artifacts.root,
             bytes.as_slice(),
             config.algorithms,
+            &invariants,
             &mut totals.borrow_mut(),
             &save_error,
         )

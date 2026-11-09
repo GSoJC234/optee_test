@@ -27,7 +27,7 @@ const _: () = {
     );
     assert!(INPUT_HEADER_SIZE > HEADER_COUNT_OFFSET);
     assert!(OUTPUT_HEADER_SIZE > HEADER_COUNT_OFFSET);
-    assert!(RESULT_SIZE == RESULT_HEADER_SIZE + RESULT_DATA_SIZE);
+    assert!(RESULT_SIZE == RESULT_HEADER_SIZE + RESULT_DATA_SIZE + RESULT_TAG_SIZE);
     assert!(MAX_OUTPUT_SIZE == OUTPUT_HEADER_SIZE + MAX_OPERATIONS * RESULT_SIZE);
 };
 
@@ -39,17 +39,18 @@ mod tests {
     /// `CORE_FUZZ_TA_VERSION` and regenerated seeds.
     #[test]
     fn host_protocol_constants_match_the_ta_wire_contract() {
-        assert_eq!(&INPUT_MAGIC, b"FZP2");
-        assert_eq!(&OUTPUT_MAGIC, b"FZR2");
-        assert_eq!(TA_VERSION, 2);
+        assert_eq!(&INPUT_MAGIC, b"FZP3");
+        assert_eq!(&OUTPUT_MAGIC, b"FZR3");
+        assert_eq!(TA_VERSION, 3);
         assert_eq!(MAX_INPUT_SIZE, 4096);
         assert_eq!(MAX_OPERATIONS, 64);
         assert_eq!(SLOT_COUNT, 8);
         assert_eq!(INPUT_HEADER_SIZE, 8);
         assert_eq!(OP_HEADER_SIZE, 7);
         assert_eq!(OUTPUT_HEADER_SIZE, 8);
-        assert_eq!(RESULT_SIZE, 40);
-        assert_eq!(RESULT_DATA_SIZE, 32);
+        assert_eq!(RESULT_SIZE, 280);
+        assert_eq!(RESULT_DATA_SIZE, 256);
+        assert_eq!(RESULT_TAG_SIZE, 16);
     }
 
     #[test]
