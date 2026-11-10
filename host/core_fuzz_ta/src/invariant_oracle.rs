@@ -41,6 +41,8 @@ struct State {
     selector: u8,
     key: Option<u64>,
     material: u64,
+    allocated_at: usize,
+    key_revision: u64,
     key_valid: bool,
     ready: bool,
     iv: Vec<u8>,
@@ -282,6 +284,7 @@ fn trace(program: &Program, steps: &[Step<'_>]) -> Vec<Event> {
                     );
                     if kind == Kind::RestrictUsage {
                         e.input = u32::from(op.aux).to_le_bytes().to_vec();
+                        e.ports.insert("mask", u32::from(op.aux).to_string());
                     }
                     if kind == Kind::GetAttr {
                         e.output_capacity = usize::from(op.aux);
@@ -358,6 +361,8 @@ fn trace(program: &Program, steps: &[Step<'_>]) -> Vec<Event> {
                         selector,
                         key: key.map(|k| k.id),
                         material: key.map_or(0, |k| k.material),
+                        allocated_at: index,
+                        key_revision: key.map_or(0, |k| k.revision),
                         key_valid,
                         ready: success && !matches!(selector, 3..=6 | 12..=13),
                         iv: Vec::new(),

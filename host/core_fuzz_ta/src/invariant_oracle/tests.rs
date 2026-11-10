@@ -263,3 +263,76 @@ fn copied_public_key_and_usage_failures_are_separate_checks() {
     outcomes[5] = (TEE_SUCCESS, &wrong_usage);
     assert!(ids(&run(usage_ops, &outcomes)).contains(&"copy_preserves_usage"));
 }
+
+#[test]
+fn usage_restriction_checks_only_matching_mask_and_fresh_state() {
+    let key = [1; 16];
+    let iv = [2; 16];
+    let plain = b"hello";
+    let encrypted = [3; 5];
+    let mut ops = vec![
+        op(OP_OBJ_ALLOC, 4, 2, 128, &[]),
+        op(OP_OBJ_POPULATE, 4, 0, 0, &key),
+        op(OP_OBJ_RESTRICT_USAGE, 4, 0, 0x04, &[]),
+        op(OP_ALLOC, 0, 3, 4, &[]),
+        op(OP_CIPHER_INIT, 0, 0, 0, &iv),
+        op(OP_CIPHER_FINAL, 0, 0, 5, plain),
+    ];
+    let ok = (TEE_SUCCESS, &[][..]);
+    let mut outcomes = vec![ok; ops.len()];
+    outcomes[5] = (TEE_SUCCESS, &encrypted);
+    assert_eq!(ids(&run(ops.clone(), &outcomes)), ["encrypt_denied"]);
+
+    outcomes[5] = (BAD_PARAMETERS, &[]);
+    assert!(run(ops.clone(), &outcomes).is_empty());
+
+    ops[2].aux = 0x02;
+    outcomes[5] = (TEE_SUCCESS, &encrypted);
+    assert!(run(ops.clone(), &outcomes).is_empty());
+    outcomes[5] = (BAD_PARAMETERS, &[]);
+    assert_eq!(ids(&run(ops.clone(), &outcomes)), ["encrypt_allowed"]);
+
+    ops[2].aux = 0x06;
+    outcomes[5] = (TEE_SUCCESS, &encrypted);
+    assert!(run(ops.clone(), &outcomes).is_empty());
+
+    ops[2].aux = 0x04;
+    ops.insert(3, op(OP_OBJ_RESET, 4, 0, 0, &[]));
+    ops.insert(4, op(OP_OBJ_POPULATE, 4, 0, 0, &key));
+    outcomes.insert(3, ok);
+    outcomes.insert(4, ok);
+    assert!(run(ops, &outcomes).is_empty());
+}
+
+#[test]
+fn decrypt_usage_restriction_checks_allowed_and_denied_masks() {
+    let key = [1; 16];
+    let iv = [2; 16];
+    let ciphertext = b"hello";
+    let plain = [3; 5];
+    let mut ops = vec![
+        op(OP_OBJ_ALLOC, 4, 2, 128, &[]),
+        op(OP_OBJ_POPULATE, 4, 0, 0, &key),
+        op(OP_OBJ_RESTRICT_USAGE, 4, 0, 0x02, &[]),
+        op(OP_ALLOC, 0, 4, 4, &[]),
+        op(OP_CIPHER_INIT, 0, 0, 0, &iv),
+        op(OP_CIPHER_FINAL, 0, 0, 5, ciphertext),
+    ];
+    let ok = (TEE_SUCCESS, &[][..]);
+    let mut outcomes = vec![ok; ops.len()];
+    outcomes[5] = (TEE_SUCCESS, &plain);
+    assert_eq!(ids(&run(ops.clone(), &outcomes)), ["decrypt_denied"]);
+
+    outcomes[5] = (BAD_PARAMETERS, &[]);
+    assert!(run(ops.clone(), &outcomes).is_empty());
+
+    ops[2].aux = 0x04;
+    outcomes[5] = (TEE_SUCCESS, &plain);
+    assert!(run(ops.clone(), &outcomes).is_empty());
+    outcomes[5] = (BAD_PARAMETERS, &[]);
+    assert_eq!(ids(&run(ops.clone(), &outcomes)), ["decrypt_allowed"]);
+
+    ops[2].aux = 0x06;
+    outcomes[5] = (TEE_SUCCESS, &plain);
+    assert!(run(ops, &outcomes).is_empty());
+}

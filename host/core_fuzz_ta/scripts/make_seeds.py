@@ -108,6 +108,21 @@ def ctr_roundtrip_witness(plain: bytes, *, copy_encrypt_key: bool) -> bytes:
     return stream(*records)
 
 
+def usage_cipher_witness(mask: int, *, decrypt: bool = False) -> bytes:
+    """Try AES-CTR with an exact usage mask on a fresh key."""
+    payload = b"usage check"
+    return stream(
+        op(Opcode.OBJ_ALLOC, slot=4, selector=2, aux=128),
+        op(Opcode.OBJ_POPULATE, slot=4, data=bytes(range(16))),
+        op(Opcode.OBJ_RESTRICT_USAGE, slot=4, aux=mask),
+        op(Opcode.OBJ_GET_INFO, slot=4),
+        op(Opcode.ALLOC, slot=0, selector=4 if decrypt else 3, aux=4),
+        op(Opcode.CIPHER_INIT, slot=0, data=bytes(range(16, 32))),
+        op(Opcode.CIPHER_FINAL, slot=0, data=payload, aux=len(payload)),
+        op(Opcode.FREE, slot=0),
+    )
+
+
 def aead_roundtrip_witness(plain: bytes) -> bytes:
     """Feed the exact ciphertext and tag from GCM encrypt into decrypt."""
     nonce = bytes(range(12))
@@ -395,6 +410,10 @@ def main() -> None:
             op(Opcode.OBJ_COPY, slot=3, selector=2),
             op(Opcode.OBJ_GET_INFO, slot=3),
         ),
+        "invariant_encrypt_allowed.bin": usage_cipher_witness(0x02),
+        "invariant_encrypt_denied.bin": usage_cipher_witness(0x04),
+        "invariant_decrypt_allowed.bin": usage_cipher_witness(0x04, decrypt=True),
+        "invariant_decrypt_denied.bin": usage_cipher_witness(0x02, decrypt=True),
     })
 
     # These capacities straddle the output sizes needed by core crypto syscalls.

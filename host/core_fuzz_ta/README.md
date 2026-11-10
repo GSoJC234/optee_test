@@ -76,6 +76,14 @@ FUZZ_OUTPUT_DIR="$HOME/optee/out/fuzz" \
   ~/optee/optee_test/host/core_fuzz_ta/scripts/run_qemu_fuzz.sh 200 1
 ```
 
+The `invariants.toml` usage rules check AES-CTR encryption and decryption after
+restricting a fresh key to either `TEE_USAGE_ENCRYPT` or `TEE_USAGE_DECRYPT`.
+Their `restrict_usage.mask` bindings match only the exact requested mask.
+The allowed rules check valid operations; the denied rules report a violation
+if a restricted key actually performs the forbidden operation. The generated
+seeds exercise all four cases. Replay prints
+`FUZZ_INVARIANT_CHECK`, and campaigns save counterexamples in `violations/`.
+
 For independent QEMU workers, set `FUZZ_WORKERS` (up to 16):
 
 ```sh

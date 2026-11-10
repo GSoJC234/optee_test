@@ -3,7 +3,7 @@
 //! Match ordered trace subsequences and check invariant assertions.
 
 use super::*;
-use crate::invariant_spec::{Invariant, InvariantSpec, RuleKind};
+use crate::invariant_spec::{Expectation, Invariant, InvariantSpec, RuleKind};
 
 fn bindings_match(rule: &Invariant, selected: &[&Event]) -> bool {
     let mut values: BTreeMap<&str, String> = BTreeMap::new();
@@ -28,7 +28,16 @@ fn bindings_match(rule: &Invariant, selected: &[&Event]) -> bool {
         let Some(value) = event.ports.get(field) else {
             return false;
         };
-        if field == "destination_type" {
+        if field == "mask" {
+            let expected = match symbol.as_str() {
+                "encrypt" => 0x02,
+                "decrypt" => 0x04,
+                _ => return false,
+            };
+            if value.parse::<u32>() != Ok(expected) {
+                return false;
+            }
+        } else if field == "destination_type" {
             if value != symbol {
                 return false;
             }
@@ -182,6 +191,29 @@ fn checked_result(rule: &Invariant, selected: &[&Event]) -> Option<bool> {
                 }
             }
             Some(last.succeeded() && u32_at(&last.output, 12) == Some(requested))
+        }
+        RuleKind::UsageRestriction => {
+            let restrict = selected[0];
+            let state = last.state.as_ref()?;
+            let expected_selector = match last.kind {
+                Kind::Encrypt => 3,
+                Kind::Decrypt => 4,
+                _ => return None,
+            };
+            if state.selector != expected_selector
+                || state.material == 0
+                || state.material != restrict.material
+                || state.key_revision != restrict.object_revision
+                || state.allocated_at <= restrict.index
+                || !state.ready
+                || last.input.is_empty()
+                || last.output_capacity < last.input.len()
+                || !last.output_complete
+                || (rule.expect == Expectation::Success && !state.key_valid)
+            {
+                return None;
+            }
+            Some(last.succeeded() == (rule.expect == Expectation::Success))
         }
     }
 }

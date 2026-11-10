@@ -79,3 +79,31 @@ inputType = "usage_mask"
 flow = ["allocate", "restrict_usage", "copy", "get_info"]
 bind = { "allocate.object" = "k", "restrict_usage.object" = "k", "copy.source" = "k", "copy.destination" = "k2", "get_info.object" = "k2" }
 expect = "output.usage == input"
+
+[[invariants]]
+id = "encrypt_allowed"
+inputType = "plain"
+flow = ["restrict_usage", "encrypt"]
+bind = { "restrict_usage.object" = "k", "restrict_usage.mask" = "encrypt", "encrypt.key" = "k" }
+expect = "success"
+
+[[invariants]]
+id = "encrypt_denied"
+inputType = "plain"
+flow = ["restrict_usage", "encrypt"]
+bind = { "restrict_usage.object" = "k", "restrict_usage.mask" = "decrypt", "encrypt.key" = "k" }
+expect = "failure"
+
+[[invariants]]
+id = "decrypt_allowed"
+inputType = "ciphertext"
+flow = ["restrict_usage", "decrypt"]
+bind = { "restrict_usage.object" = "k", "restrict_usage.mask" = "decrypt", "decrypt.key" = "k" }
+expect = "success"
+
+[[invariants]]
+id = "decrypt_denied"
+inputType = "ciphertext"
+flow = ["restrict_usage", "decrypt"]
+bind = { "restrict_usage.object" = "k", "restrict_usage.mask" = "encrypt", "decrypt.key" = "k" }
+expect = "failure"

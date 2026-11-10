@@ -45,6 +45,8 @@ pub enum InputType {
     Digest,
     /// Plaintext bytes used in encryption and decryption.
     Plain,
+    /// Ciphertext bytes supplied to decryption.
+    Ciphertext,
     /// Object secret bytes used in copy and attribute checks.
     Secret,
     /// Requested object usage flags.
@@ -116,12 +118,10 @@ impl Operation {
             | Self::AuthDecrypt
             | Self::Generate => port == "key",
             Self::Copy => matches!(port, "source" | "destination" | "destination_type"),
-            Self::GetAttr
-            | Self::Reset
-            | Self::Populate
-            | Self::GetInfo
-            | Self::Allocate
-            | Self::RestrictUsage => port == "object",
+            Self::GetAttr | Self::Reset | Self::Populate | Self::GetInfo | Self::Allocate => {
+                port == "object"
+            }
+            Self::RestrictUsage => matches!(port, "object" | "mask"),
         }
     }
 }
@@ -132,6 +132,9 @@ pub enum Expectation {
     /// The final operation must succeed.
     #[serde(rename = "success")]
     Success,
+    /// The final operation must fail.
+    #[serde(rename = "failure")]
+    Failure,
     /// The final output bytes must equal the original flow input.
     #[serde(rename = "output == input")]
     OutputEqualsInput,
@@ -152,6 +155,7 @@ pub(crate) enum RuleKind {
     SecretCopy,
     Reset,
     Usage,
+    UsageRestriction,
 }
 
 impl Invariant {
@@ -170,6 +174,12 @@ impl Invariant {
             }
             (I::Digest, E::Success, [O::Copy, O::Sign, O::Verify]) => Some(R::Signature),
             (I::Digest, E::Success, [O::Generate, O::Sign, O::Verify]) => Some(R::Signature),
+            (I::Plain, E::Success | E::Failure, [O::RestrictUsage, O::Encrypt]) => {
+                Some(R::UsageRestriction)
+            }
+            (I::Ciphertext, E::Success | E::Failure, [O::RestrictUsage, O::Decrypt]) => {
+                Some(R::UsageRestriction)
+            }
             (I::Secret, E::OutputUninitialized, [O::Populate, O::Reset, O::GetInfo]) => {
                 Some(R::Reset)
             }
@@ -193,6 +203,7 @@ impl Expectation {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
+            Self::Failure => "failure",
             Self::OutputEqualsInput => "output == input",
             Self::OutputUninitialized => "output.initialized == false",
             Self::OutputUsageEqualsInput => "output.usage == input",
@@ -295,6 +306,12 @@ impl InvariantSpec {
                         format!("binding {port_name:?} uses an unknown port"),
                     ));
                 }
+                if port == "mask" && !matches!(value.as_str(), "encrypt" | "decrypt") {
+                    return Err(validation(
+                        &rule.id,
+                        format!("binding {port_name:?} requires encrypt or decrypt"),
+                    ));
+                }
                 validate_name(value).map_err(|reason| {
                     validation(
                         &rule.id,
@@ -332,9 +349,9 @@ mod tests {
     const ALL_RULES: &str = include_str!("../invariants.toml");
 
     #[test]
-    fn parses_all_eleven_rules_in_order() {
+    fn parses_all_fifteen_rules_in_order() {
         let spec = InvariantSpec::parse(ALL_RULES).unwrap();
-        assert_eq!(spec.invariants.len(), 11);
+        assert_eq!(spec.invariants.len(), 15);
         assert_eq!(spec.invariants[0].id, "sign_verify");
         assert_eq!(spec.invariants[0].input_type, InputType::Digest);
         assert_eq!(
@@ -351,6 +368,13 @@ mod tests {
             spec.invariants[10].expect,
             Expectation::OutputUsageEqualsInput
         );
+        assert_eq!(spec.invariants[11].id, "encrypt_allowed");
+        assert_eq!(spec.invariants[12].id, "encrypt_denied");
+        assert_eq!(spec.invariants[12].expect, Expectation::Failure);
+        assert_eq!(spec.invariants[13].id, "decrypt_allowed");
+        assert_eq!(spec.invariants[13].input_type, InputType::Ciphertext);
+        assert_eq!(spec.invariants[14].id, "decrypt_denied");
+        assert_eq!(spec.invariants[14].expect, Expectation::Failure);
     }
 
     #[test]
@@ -387,5 +411,16 @@ mod tests {
             InvariantSpec::parse(&wrong_expect),
             Err(SpecError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn rejects_unknown_usage_mask_binding() {
+        let input = ALL_RULES.replacen(
+            "\"restrict_usage.mask\" = \"decrypt\"",
+            "\"restrict_usage.mask\" = \"unknown\"",
+            1,
+        );
+        let error = InvariantSpec::parse(&input).unwrap_err();
+        assert!(error.to_string().contains("requires encrypt or decrypt"));
     }
 }
