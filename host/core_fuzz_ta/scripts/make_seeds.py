@@ -79,6 +79,27 @@ def sign_verify_witness(digest: bytes, *, public_copy: bool = False,
     return stream(*records)
 
 
+def ecdsa_public_verify_seed(digest: bytes) -> bytes:
+    """Sign with a P-256 keypair and verify using a copy of its key."""
+    records = [
+        op(Opcode.OBJ_ALLOC, slot=0, selector=6, aux=256),
+        op(Opcode.OBJ_GENERATE_KEY, slot=0, selector=1, aux=256),
+        op(Opcode.OBJ_ALLOC, slot=1, selector=7, aux=256),
+        op(Opcode.OBJ_COPY, slot=1, selector=0),
+        op(Opcode.ALLOC, slot=0, selector=18, aux=0),
+    ]
+    sign_index = len(records)
+    records.extend((
+        op(Opcode.ASYMM_OPERATE, slot=0, data=digest, aux=128),
+        op(Opcode.FREE, slot=0),
+        op(Opcode.ALLOC, slot=1, selector=19, aux=1),
+        op(Opcode.ASYMM_VERIFY, slot=1, selector=2, aux=sign_index,
+           data=digest),
+        op(Opcode.FREE, slot=1),
+    ))
+    return stream(*records)
+
+
 def ctr_roundtrip_witness(plain: bytes, *, copy_encrypt_key: bool) -> bytes:
     """Use two equivalent AES keys because operation states own their keys."""
     key = bytes(range(16))
@@ -327,6 +348,8 @@ def main() -> None:
                selector=16),
             op(Opcode.FREE),
         ),
+        "ecdsa_p256_public_verify.bin": ecdsa_public_verify_seed(
+            rsa_digest),
         "rsa_sign_verify.bin": stream(
             op(Opcode.OBJ_ALLOC, slot=0, selector=4, aux=2048),
             op(Opcode.OBJ_GENERATE_KEY, slot=0, aux=2048),

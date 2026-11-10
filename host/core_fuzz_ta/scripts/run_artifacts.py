@@ -104,7 +104,10 @@ def classify(exit_code, phase, secure, normal, payload_phase, hang_count=0):
     if "Undefined behavior " in secure:
         return ("CORE_UBSAN" if phase == payload_phase else "UNATTRIBUTED_UBSAN",
                 "secure_console_ubsan_marker")
-    if re.search(r"Panic at core/", secure):
+    if re.search(
+        r"(?m)^E/TC:.*(?:Core data-abort|Panic(?: '[^'\r\n]+')? at core/)",
+        secure,
+    ):
         return ("CORE_PANIC" if phase == payload_phase else "UNATTRIBUTED_CORE_PANIC",
                 "secure_console_core_panic")
     if exit_code == 124:

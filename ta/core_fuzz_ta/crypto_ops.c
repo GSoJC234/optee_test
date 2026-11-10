@@ -133,6 +133,12 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 			mode = selector == 16 ? TEE_MODE_ENCRYPT :
 				TEE_MODE_DECRYPT;
 			break;
+		case 18:
+		case 19:
+			algo = TEE_ALG_ECDSA_SHA256;
+			mode = selector == 18 ? TEE_MODE_SIGN :
+				TEE_MODE_VERIFY;
+			break;
 		default:
 			step = TEE_ERROR_BAD_PARAMETERS;
 			break;
@@ -221,6 +227,10 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 			type = TEE_TYPE_RSA_KEYPAIR;
 		else if (selector == 5)
 			type = TEE_TYPE_RSA_PUBLIC_KEY;
+		else if (selector == 6)
+			type = TEE_TYPE_ECDSA_KEYPAIR;
+		else if (selector == 7)
+			type = TEE_TYPE_ECDSA_PUBLIC_KEY;
 		else if (selector) {
 			step = TEE_ERROR_BAD_PARAMETERS;
 			break;
@@ -305,11 +315,17 @@ TEE_Result crypto_execute(struct fuzz_context *ctx,
 			ctx->crypto_object_handles[slot],
 			ctx->crypto_object_handles[selector]);
 		break;
-	case CORE_FUZZ_TA_OBJ_GENERATE_KEY:
+	case CORE_FUZZ_TA_OBJ_GENERATE_KEY: {
+		struct utee_attribute curve = {
+			.attribute_id = TEE_ATTR_ECC_CURVE,
+			.a = TEE_ECC_CURVE_NIST_P256,
+		};
+
 		step = _utee_cryp_obj_generate_key(
-			ctx->crypto_object_handles[slot],
-			aux ? aux : 256, NULL, 0);
+			ctx->crypto_object_handles[slot], aux ? aux : 256,
+			selector == 1 ? &curve : NULL, selector == 1 ? 1 : 0);
 		break;
+	}
 	case CORE_FUZZ_TA_STATE_COPY:
 		if (selector >= CORE_FUZZ_TA_SLOTS) {
 			step = TEE_ERROR_BAD_PARAMETERS;

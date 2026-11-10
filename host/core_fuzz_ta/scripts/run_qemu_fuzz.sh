@@ -40,7 +40,7 @@ if [ "$ALGORITHMS" != all ]; then
         case "$algorithm" in
             sha256|sha512|hmac-sha256|aes-ctr|aes-gcm|hkdf|\
             rsa-pkcs1v15-sha256|rsaes-pkcs1v15|aes-ccm|\
-            rsa-pss-sha256|rsa-oaep-sha256|random) ;;
+            rsa-pss-sha256|rsa-oaep-sha256|ecdsa-p256-sha256|random) ;;
             *) echo "unsupported algorithm: $algorithm" >&2; exit 2 ;;
         esac
     done

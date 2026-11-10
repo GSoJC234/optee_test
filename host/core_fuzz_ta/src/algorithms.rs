@@ -9,7 +9,7 @@ use crate::{
     protocol::{OP_ALLOC, OP_OBJ_ALLOC, OP_RANDOM},
 };
 
-const NAMES: [&str; 12] = [
+const NAMES: [&str; 13] = [
     "sha256",
     "sha512",
     "hmac-sha256",
@@ -22,6 +22,7 @@ const NAMES: [&str; 12] = [
     "rsa-pss-sha256",
     "rsa-oaep-sha256",
     "random",
+    "ecdsa-p256-sha256",
 ];
 const ALL: u16 = (1 << NAMES.len()) - 1;
 
@@ -88,6 +89,7 @@ impl AlgorithmSet {
             2 => self.has(3) || self.has(4) || self.has(8),
             3 => self.has(5),
             4 | 5 => (6..=10).any(|index| self.has(index)),
+            6 | 7 => self.has(12),
             _ => true, // Invalid selectors only exercise parameter rejection.
         }
     }
@@ -110,6 +112,7 @@ impl AlgorithmSet {
                     12..=13 => Some(8),
                     14..=15 => Some(9),
                     16..=17 => Some(10),
+                    18..=19 => Some(12),
                     _ => None,
                 };
                 index.is_none_or(|i| self.has(i))
@@ -172,5 +175,12 @@ mod tests {
         assert!(selected.allows_program(&program(OP_OBJ_ALLOC, 2)));
         assert!(!selected.allows_program(&program(OP_OBJ_ALLOC, 4)));
         assert!(!selected.allows_program(&program(OP_RANDOM, 0)));
+        assert!(!selected.allows_program(&program(OP_ALLOC, 18)));
+        let ecdsa: AlgorithmSet = "ecdsa-p256-sha256".parse().unwrap();
+        assert!(ecdsa.allows_program(&program(OP_ALLOC, 18)));
+        assert!(ecdsa.allows_program(&program(OP_ALLOC, 19)));
+        assert!(ecdsa.allows_program(&program(OP_OBJ_ALLOC, 6)));
+        assert!(ecdsa.allows_program(&program(OP_OBJ_ALLOC, 7)));
+        assert!(!ecdsa.allows_program(&program(OP_OBJ_ALLOC, 4)));
     }
 }

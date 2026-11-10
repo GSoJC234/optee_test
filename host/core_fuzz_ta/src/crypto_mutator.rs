@@ -14,8 +14,10 @@ use crate::protocol::{
 
 // Selector values understood by the TA for each opcode family; see
 // `ta/core_fuzz_ta/README.md`.
-const ALLOC_SELECTORS: [u8; 18] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-const OBJECT_SELECTORS: [u8; 6] = [0, 1, 2, 3, 4, 5];
+const ALLOC_SELECTORS: [u8; 20] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+];
+const OBJECT_SELECTORS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 const SMALL_SELECTORS: [u8; 4] = [0, 1, 2, 3];
 const BOOL_SELECTORS: [u8; 2] = [0, 1];
 const CIPHER_SELECTORS: [u8; 2] = [0, 0x80];
@@ -51,7 +53,7 @@ pub(crate) fn selector_values(opcode: u8) -> &'static [u8] {
     match opcode {
         OP_ALLOC => &ALLOC_SELECTORS,
         OP_OBJ_ALLOC => &OBJECT_SELECTORS,
-        OP_OBJ_POPULATE => &BOOL_SELECTORS,
+        OP_OBJ_POPULATE | OP_OBJ_GENERATE_KEY => &BOOL_SELECTORS,
         OP_ASYMM_OPERATE | OP_ASYMM_VERIFY => &ASYMM_SELECTORS,
         OP_OBJ_COPY | OP_STATE_COPY | OP_DERIVE_KEY => &SLOT_SELECTORS,
         OP_CIPHER_UPDATE | OP_CIPHER_FINAL => &CIPHER_SELECTORS,
